@@ -5,16 +5,41 @@ package YAMilter;
 use strict;
 use warnings;
 
+use FindBin::libs;
 use Milter::Recipe;
 use Getopt::Long qw{GetOptionsFromArray};
+use Pod::Usage;
+
+=head1 USAGE
+
+    yamilter --config /etc/yamilter.cfg [--dump]
+
+=over 4
+
+=item C<--config>
+
+Runs the configured milters in the provided config file
+
+=item C<--help>
+
+Prints this message.
+
+=back
+
+=cut
 
 sub main {
     my @args = @_;
 
-    my $cfile;
-    GetOptionsFromArray(\@args, {
+    my ($cfile, $help);
+    GetOptionsFromArray(\@args, 
         'config=s' => \$cfile,
-    });
+        'help'     => \$help,
+    );
+
+    return Pod::Usage::pod2usage( -exitval => 'NOEXIT' ) && 0 if $help;
+
+    die "--config is mandatory" unless $cfile;
 
     my $mr = Milter::Recipe->new($cfile);
     return $mr->run();
