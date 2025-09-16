@@ -34,7 +34,9 @@ It is written to refer to /etc/yamilter.cfg as the config file.
 
 The `service` section above allows configuration of where the PID/Socket files live.
 
-You'll likely want to configure chrooted dovecot to have these inside its chroot.
+The values above are the defaults if you omit these parameters.
+
+You'll likely want to configure chrooted dovecot to have the sock inside its chroot.
 
 ### Recipe configuration
 

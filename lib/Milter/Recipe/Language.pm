@@ -23,10 +23,11 @@ sub body {
 	# Also emits a logline we can fail2ban on
     if ( !any { langof($body_ref) } @allowed_langs ) {
         $ctx->setreply(550, '5.7.6', "Language used in mail body is incomprehensible to our users");
-        return __CLASS__->reject();
+        return __CLASS__->config_action();
     }
 
-    return __CLASS__->cont();
+    # Instructs Sendmail::Milter to do SMFIS_CONTINUE
+    return undef;
 }
 
 1;

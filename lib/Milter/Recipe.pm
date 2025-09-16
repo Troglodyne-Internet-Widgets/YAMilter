@@ -16,8 +16,11 @@ See the L<yamilter> documentation for config file format.
 
 =cut
 
+my $obj;
 sub new {
     my ($class, $cfile) = @_;
+
+    return $obj if $obj;
 
     die "No such configuration file $cfile!" unless -f $cfile;
 
@@ -41,6 +44,28 @@ sub new {
 
 sub pidfile { $_[0]->{pidfile} }
 sub sock    { $_[0]->{sock}    }
+
+sub config {
+    my $class = shift;
+    my ($recipe) = $class =~ m/::(\w+)$/;
+    my $self = $class->new()
+    return $self->{$recipe};
+}
+
+my %action = (
+    reject   => SMFIS_REJECT,
+    discard  => SMFIS_DISCARD,
+    tempfail => SMFIS_TEMPFAIL,
+    accept   => SMFIS_ACCEPT,
+    continue => SMFIS_CONTINUE,
+);
+
+sub config_action {
+    my $class = shift;
+    my $conf = $class->config();
+    return $action{$conf->{action}} if $conf->{action};
+    return $action{reject};
+}
 
 sub run {
     my $self = shift;
@@ -106,7 +131,7 @@ sub _run_callbacks {
     my $args = shift;
     foreach my $cb (@_) {
         $res = $cb->(@$args);
-        return $res if $res ne SMFIS_CONTINUE;
+        return $res if defined $res && $res ne SMFIS_CONTINUE;
     }
     return SMFIS_CONTINUE;
 }
