@@ -16,9 +16,6 @@ Based on `Sendmail::Milter`; most of the work making a recipe is in writing a mi
 [service]
 pidfile=/var/run/YAMilter.pid
 sock=/var/run/YAMilter.sock
-[recipes]
-Language
-MatchingFrom
 [Language]
 langs=en, fr, es
 action=discard
