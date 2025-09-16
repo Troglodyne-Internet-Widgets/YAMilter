@@ -1,0 +1,23 @@
+package YAMilter;
+
+use strict;
+use warnings;
+
+use Milter::Recipe;
+use Getopt::Long qw{GetOptionsFromArray};
+
+sub main {
+    my @args = @_;
+
+    my $cfile;
+    GetOptionsFromArray(\@args, {
+        'config=s' => \$cfile,
+    });
+
+    my $mr = Milter::Recipe->new($cfile);
+    return $mr->run();
+}
+
+exit main(@ARGV) unless caller;
+
+1;
