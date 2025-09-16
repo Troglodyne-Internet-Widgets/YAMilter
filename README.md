@@ -54,7 +54,8 @@ and considered sufficient example for other authors to do the same.
 
 ### Language
 
-Reject mails which are not comprehensible to your userbase, as specified by the langs in the config file.
+Reject mails which are not comprehensible to your userbase.
+Explicit whitelist specified by `langs` in the config file.
 
 Uses Lingua::Identify to scan the body of messages and rejects those not a high probability of the preferred language(s).
 
