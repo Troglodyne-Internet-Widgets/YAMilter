@@ -2,6 +2,8 @@
 
 Yet another Milter program.
 
+`yamilter --config /etc/yamilter.cfg`
+
 The focus here is to have some overlooked filters & common business logic that you can load up with simple configuration.
 
 Any sub-namespace of `Milter::Recipe` is considered available to be loaded.
@@ -28,6 +30,7 @@ List the recipes you want to load, and then specify any configuration relevant t
 ### Service configuration
 
 Included in the service/ directory is a systemd service configuration you can drop in and use right away.
+It is written to refer to /etc/yamilter.cfg as the config file.
 
 The `service` section above allows configuration of where the PID/Socket files live.
 
@@ -40,6 +43,8 @@ By default, each recipe MUST reject, but if the action is set, do that instead.
 
 The only meaningful actions to take other than reject are discard or tempfail.
 Maybe you want to accept, but that is usually ill-advised.
+
+TODO: add a 'spam' action to add a spam header and accept.
 
 All other recipe configuration is up to the recipe itself and you should refer to their documentation.
 
@@ -54,7 +59,7 @@ Reject mails which are not comprehensible to your userbase, as specified by the 
 
 Uses Lingua::Identify to scan the body of messages and rejects those not a high probability of the preferred language(s).
 
-## Further Ideas
+## TODO: Further Ideas
 
 Based on the spam I currently recieve, implementing these below (and the above) would remove 99.99% of the spam I recieve on my mx.
 

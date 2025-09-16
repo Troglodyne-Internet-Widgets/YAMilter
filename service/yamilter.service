@@ -1,0 +1,14 @@
+[Unit]
+Description=Yet Another Milter Program
+Wants=multi-user.target
+After=multi-user.target
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+Type=exec
+PIDFile=/var/run/yamilter.pid
+ExecStart=yamilter --config /etc/yamilter.cfg
+Restart=always
+OOMPolicy=stop
