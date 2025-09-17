@@ -19,6 +19,7 @@ Most of the functionality therein is better covered by other software such as op
 [service]
 pidfile=/var/run/YAMilter.pid
 sock=/var/run/YAMilter.sock
+debug=0
 [Language]
 langs=en, fr, es
 action=discard
