@@ -10,7 +10,7 @@ use feature qw{state};
 use warnings;
 
 use Config::Simple;
-use Sendmail::Milter;
+use Sendmail::PMilter qw{:all};
 
 =head1 CONFIGURATION
 
@@ -82,13 +82,14 @@ my %action = (
     tempfail => SMFIS_TEMPFAIL,
     accept   => SMFIS_ACCEPT,
     continue => SMFIS_CONTINUE,
+    loop     => SMFIS_MSG_LOOP,
 );
 
 =head2 $class->config_action()
 
 Every recipe MUST support returning an action to take after doing its' test.
 
-Acceptable actions are (reject, discard, tempfail, accept, continue).
+Acceptable actions are (reject, discard, tempfail, accept, continue, loop).
 
 This is the sub to call to accomplish that:
 
@@ -118,38 +119,48 @@ sub run {
 
 	print "YAMilter starting up...\n";
 
-	unlink $self->pidfile if -e $self->pidfile;
-	unlink $self->sock 	  if -e $self->sock;
+	unlink $self->pidfile() if -e $self->pidfile();
+	unlink $self->sock() 	  if -e $self->sock();
 
-	print { open(my $fh, '>', $self->pidfile); $fh } $$;
+	print { open(my $fh, '>', $self->pidfile()); $fh } $$;
+    print "YAMilter listening on ".$self->sock()."\n";
 
     print "Loaded milter modules: ";
     print join(',', (map { my $subj = $_; $subj =~ s/^Milter::Recipe:://; $subj } loaded_recipes()))."\n";
 
-    my $listen = "local:$self->sock";
+    my $listen = "local:".$self->sock();
     my %callbacks = $self->cb();
 
-    Sendmail::Milter::setconn($listen) || die "Could not setup socket for YAMilter";
-    Sendmail::Milter::register("YAMilter", \%callbacks, SMFI_CURR_ACTS) || die "Could not register YAMilter";
-    Sendmail::Milter::main() || die "Could not run YAMilter";
+    my $dispatcher = Sendmail::PMilter::prefork_dispatcher(
+        max_children           => 10,
+        max_requests_per_child => 100,
+    );
 
-	unlink $self->pidfile;
-	unlink $self->sock;
+    $Sendmail::PMilter::DEBUG=1;
+    my $milter = Sendmail::PMilter->new();
+    $milter->setconn($listen) || die "Could not setup socket for YAMilter";
+    $milter->register("YAMilter", \%callbacks, SMFI_V6_PROT) || die "Could not register YAMilter";
+    $milter->set_dispatcher($dispatcher);
+    $milter->main() || die "Could not run YAMilter";
+
+	unlink $self->pidfile();
+	unlink $self->sock();
 
 	print "Shutting down YAMilter.\n";
 }
 
 my %cb = (
-	connect => \&cont,
-	helo    => \&cont,
-	envfrom => \&cont,
-	envrcpt => \&cont,
-	header  => \&cont,
-	eoh     => \&cont,
-    body    => \&cont,
-	eom     => \&accept,
-	abort   => \&cont,
-	close   => \&cont,
+    negotiate => \&cont,
+	connect   => \&cont,
+	helo      => \&cont,
+	envfrom   => \&cont,
+	envrcpt   => \&cont,
+	header    => \&cont,
+	eoh       => \&cont,
+    body      => \&cont,
+	eom       => \&accept,
+	abort     => \&cont,
+	close     => \&cont,
 );
 
 =head2 cb

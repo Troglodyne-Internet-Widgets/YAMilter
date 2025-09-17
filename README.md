@@ -8,7 +8,7 @@ The focus here is to have some overlooked filters & common business logic that y
 
 Any sub-namespace of `Milter::Recipe` is considered available to be loaded.
 
-Based on `Sendmail::Milter`; most of the work making a recipe is in writing a milter callback used thereby.
+Based on `Sendmail::PMilter`; most of the work making a recipe is in writing a milter callback used thereby.
 
 ## Configuration
 
@@ -57,7 +57,7 @@ and considered sufficient example for other authors to do the same.
 Reject mails which are not comprehensible to your userbase.
 Explicit whitelist specified by `langs` in the config file.
 
-Uses Lingua::Identify to scan the body of messages and rejects those not a high probability of the preferred language(s).
+Uses Lingua::Identify to scan the body of messages and rejects those without a high probability of being written in the preferred language(s).
 
 ## TODO: Further Ideas
 
