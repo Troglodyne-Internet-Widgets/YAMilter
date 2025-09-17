@@ -55,6 +55,9 @@ All other recipe configuration is up to the recipe itself and you should refer t
 The ones provided with the YAMilter program are both scratching my personal itch,
 and considered sufficient example for other authors to do the same.
 
+Writing them should be made significantly easier thanks to being able to test with `Milter::Client`.
+There is also a testing helper library in `t/lib/YAMilterTest.pm` that facilitates actually running the milter in testing context.
+
 ### Language
 
 Reject mails which are not comprehensible to your userbase.
