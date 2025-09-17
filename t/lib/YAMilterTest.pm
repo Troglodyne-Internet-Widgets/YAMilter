@@ -19,6 +19,7 @@ sub getconfig {
     my $ncf = Config::Simple->new( syntax => 'ini' );
     $ncf->param('service.sock',    $sock);
     $ncf->param('service.pidfile', $pid);
+    $ncf->param('service.workers', 1);
     $ncf->param('service.f',       $cfg_file );
 
     $ncf->write($cfg_file);

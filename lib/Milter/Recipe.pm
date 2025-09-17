@@ -43,6 +43,7 @@ sub new {
     my %obj = (
         pidfile => $config->param('service.pidfile') // "/var/run/yamilter.pid",
         sock    => $config->param('service.sock')    // "/var/run/yamilter.sock",
+        workers => $config->param('service.workers') // 10,
     );
     foreach my $recipe (@blocks) {
         next if $recipe eq 'service';
@@ -58,6 +59,7 @@ sub new {
 
 sub pidfile { $_[0]->{pidfile} }
 sub sock    { $_[0]->{sock}    }
+sub workers { $_[0]->{workers} }
 
 =head1 STATIC METHODS
 
@@ -132,7 +134,7 @@ sub run {
     my %callbacks = $self->cb();
 
     my $dispatcher = Sendmail::PMilter::prefork_dispatcher(
-        max_children           => 10,
+        max_children           => $self->workers(),
         max_requests_per_child => 100,
     );
 
