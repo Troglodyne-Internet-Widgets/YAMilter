@@ -4,6 +4,7 @@ use warnings;
 use Exporter 'import';
 our @EXPORT_OK = qw{fork_and_term getsock getconfig writeconfig SMFIR_ACCEPT SMFIR_CONTINUE SMFIR_DISCARD SMFIR_REJECT};
 
+use Time::HiRes qw{usleep};
 use Sendmail::PMilter qw{:all};
 use File::Temp;
 use Config::Simple;
@@ -92,27 +93,42 @@ sub sendmail {
         my $packed = pack($tmpl, @$args);
         # What we will actually send over the wire
         my $packed_with_length = pack('N a*', length($packed), $packed);
-        #print "Sending $action..";
         syswrite $sock, $packed_with_length;
-        my $res = _poll($sock);
-        my @all = unpack("AAAAA", $res);
-        my $response = $all[-1];
-        #print "Got $response from server\n";
-        # If the result is just 'right back at ya' I don't care (NEGOTIATE).
-        next if $res eq $packed_with_length;
-        return $response if $response ne SMFIR_CONTINUE; 
+        my ($res, $payload) = _poll($sock);
+        # Don't care about the return of the option negotiation process
+        next if $res eq SMFIC_OPTNEG;
+        warn $payload if $payload;
+        return ($res,$payload) if $res ne SMFIR_CONTINUE; 
     }
-    return SMFIR_CONTINUE;
+    return (SMFIR_CONTINUE, undef);
 }
 
 sub _poll {
     my $sock = shift;
     my $buf = '';
-    while (1) {
+    my $buf_actual = '';
+
+    # If all else fails and we end up reading a dead pipe
+    local $SIG{ALRM} = sub { die };
+
+    for (1..1000) {
+        # Don't let things get out of hand
+        alarm 1;
         sysread($sock, $buf, 10000);
-        last if $buf;
+        alarm 0;
+
+        $buf_actual .= $buf;
+        my ($len, $code, $payload) = unpack("NAa*", $buf_actual);
+        return ($code,$payload) if $code;
+
+        # If there's nothing (meaningful) in the pipe, give up.
+        last if length($buf_actual) >= 5;
+
+        # Otherwise wait for output
+        usleep 1000;
     }
-    return $buf;
+    # Presume that if we got no response within timeout, we should continue
+    return SMFIR_CONTINUE;
 }
 
 
@@ -129,6 +145,7 @@ sub getconfig {
     $ncf->param('service.pidfile', $pid);
     $ncf->param('service.workers', 1);
     $ncf->param('service.f',       $cfg_file );
+    $ncf->param('service.debug', 1);
 
     $ncf->write($cfg_file);
 

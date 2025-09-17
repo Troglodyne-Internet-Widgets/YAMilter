@@ -26,6 +26,8 @@ Creates the Milter recipe singleton.  Subsequent calls simply return the same ob
 
 =cut
 
+my $DEBUG=0;
+
 # This here is what you call a 'singleton'
 my $singleton;
 sub new {
@@ -45,7 +47,9 @@ sub new {
         sock    => $config->param('service.sock')    // "/var/run/yamilter.sock",
         workers => $config->param('service.workers') // 10,
         cfile   => $cfile,
+        debug   => $config->param('service.debug') // 0,
     );
+    $DEBUG = $obj{debug};
     foreach my $recipe (@blocks) {
         next if $recipe eq 'service';
         require "Milter/Recipe/$recipe.pm" or do {
@@ -62,6 +66,7 @@ sub pidfile { $_[0]->{pidfile} }
 sub sock    { $_[0]->{sock}    }
 sub workers { $_[0]->{workers} }
 sub cfile   { $_[0]->{cfile}   }
+sub debug   { $_[0]->{debug}   }
 
 =head1 STATIC METHODS
 
@@ -75,15 +80,22 @@ If your Recipe requires configuration, this is the method to call.
 
 sub config {
     my $class = shift;
+
+    state $section;
+    return $section if $section;
+
     my ($recipe) = $class =~ m/::(\w+)$/;
     my $self = $class->new();
-    return $self->{$recipe};
+    $section = $self->{$recipe};
+    $section->{debug} = $self->debug();
+    return $section;
 }
 
 my %action = (
     reject   => SMFIS_REJECT,
     discard  => SMFIS_DISCARD,
     tempfail => SMFIS_TEMPFAIL,
+    defer    => SMFIS_TEMPFAIL,
     accept   => SMFIS_ACCEPT,
     continue => SMFIS_CONTINUE,
     loop     => SMFIS_MSG_LOOP,
@@ -106,8 +118,35 @@ This is the sub to call to accomplish that:
 sub config_action {
     my $class = shift;
     my $conf = $class->config();
+    warn "Taking configured action of $conf->{action} ($action{$conf->{action}})" if $conf->{debug};
     return $action{$conf->{action}} if $conf->{action};
     return $action{reject};
+}
+
+=head2 ($smtp_code, $esmtp_code) = $class->config_code()
+
+Sometimes you will want a callback to do $ctx->setreply() to have a complicated response.
+
+This will map the config action to the appropriate response code to use as the first arg to setreply().
+
+Dies in the event your action has no appropriate code (e.g. discard, loop).
+
+=cut
+
+my %action2code = (
+    SMFIS_REJECT()   => [550, '5.7.1'],
+    SMFIS_TEMPFAIL() => [450, '4.7.1'],
+    SMFIS_ACCEPT()   => [250, '2.0.0'],
+    SMFIS_CONTINUE() => [354, '3.0.0'],
+);
+
+sub config_code {
+    my $class  = shift;
+    my $action = $class->config_action();
+    warn "Action: $action";
+    my $code   = $action2code{$action};
+    die "No appropriate code available for the configured action" unless $code;
+    return @$code
 }
 
 =head1 METHODS
@@ -141,7 +180,7 @@ sub run {
         max_requests_per_child => 100,
     );
 
-    $Sendmail::PMilter::DEBUG=1;
+    $Sendmail::PMilter::DEBUG=1 if $self->debug();
     my $milter = Sendmail::PMilter->new();
     $milter->setconn($listen) || die "Could not setup socket for YAMilter";
     $milter->register("YAMilter", \%callbacks, SMFI_V6_PROT) || die "Could not register YAMilter";
@@ -180,7 +219,7 @@ sub cb {
     return %full_cb if %full_cb;
 
     my %intermediate;
-    @intermediate{keys(%cb)} = map {[$_]} values(%cb);
+    @intermediate{keys(%cb)} = map {[[ Default => $_ ]]} values(%cb);
 
     no strict 'refs';
     foreach my $lm ($self->loaded_recipes()) {
@@ -188,23 +227,46 @@ sub cb {
         my %mcb = %{*$cb{HASH}};
         die "Milter recipes must have at least one callback" unless %mcb;
         foreach my $callback (keys(%mcb)) {
-            push(@{$full_cb{$callback}}, $mcb{$callback});
+            push(@{$intermediate{$callback}}, [ $lm => $mcb{$callback} ]);
         }
     }
     use strict 'refs';
 
     foreach my $callback (keys(%intermediate)) {
-        $full_cb{$callback} = sub { _run_callbacks(\@_, @{$intermediate{$callback}}) }
+        $full_cb{$callback} = sub { _run_callbacks($callback, \@_, @{$intermediate{$callback}}) }
     }
 
     return %full_cb;
 }
 
+# Doing this on purpose to catch bad parses
+no warnings qw{uninitialized};
+my %mr = (
+    SMFIS_CONTINUE() => 'CONTINUE',
+    SMFIS_TEMPFAIL() => 'TEMPFAIL',
+    SMFIS_REJECT()   => 'REJECT',
+    SMFIS_ACCEPT()   => 'ACCEPT',
+    SMFIS_MSG_LOOP() => 'HELO LOOP',
+    undef()          => 'UNKNOWN',
+    ''               => 'UNKNOWN',
+);
+use warnings;
+
 # Just run everything in order until we short-circuit
 sub _run_callbacks {
+    my $callback = shift;
     my $args = shift;
-    foreach my $cb (@_) {
+    foreach my $cbo (@_) {
+        my $module = $cbo->[0];
+        my $cb     = $cbo->[1];
+        warn "Running $module $callback callback" if $DEBUG;
         my $res = $cb->(@$args);
+        if ($DEBUG) {
+            no warnings qw{uninitialized};
+            my $res_trans = $mr{$res};
+            use warnings;
+            warn "Response from callback: $res_trans ($res)";
+        }
         return $res if defined $res && $res ne SMFIS_CONTINUE;
     }
     return SMFIS_CONTINUE;

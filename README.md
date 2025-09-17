@@ -10,6 +10,9 @@ Any sub-namespace of `Milter::Recipe` is considered available to be loaded.
 
 Based on `Sendmail::PMilter`; most of the work making a recipe is in writing a milter callback used thereby.
 
+While there exist older modular milters such as Mail::Milter, they have not recieved updates in many, many years.
+Most of the functionality therein is better covered by other software such as opendmarc/opendkim or postfix itself.
+
 ## Configuration
 
 ```

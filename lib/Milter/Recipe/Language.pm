@@ -3,6 +3,10 @@ package Milter::Recipe::Language;
 use strict;
 use warnings;
 
+no warnings qw{experimental};
+use feature qw{state};
+use warnings;
+
 use parent qw{Milter::Recipe};
 
 use List::Util qw{any};
@@ -13,26 +17,30 @@ our %cb = (
 );
 
 sub body {
-    my $ctx = shift;
-    my $body_chunk = shift;
-    my $body_ref = $ctx->getpriv();
-    ${$body_ref} .= $body_chunk;
-    $ctx->setpriv($body_ref);
+    my ($ctx, $body_chunk, $body_length) = @_;
 
-    my $conf = __PACKAGE__->config();
-    die "Language milter requires the 'langs' param to be configured" unless defined $conf->{langs};
-    $conf->{langs} = [$conf->{langs}] unless ref $conf->{langs} eq 'ARRAY';
-    my @allowed_langs = @{$conf->{langs}};
+    state @allowed_langs;
+    state $debug;
+    if (!@allowed_langs) {
+        my $conf = __PACKAGE__->config();
+        die "Language milter requires the 'langs' param to be configured" unless defined $conf->{langs};
+        $conf->{langs} = [$conf->{langs}] unless ref $conf->{langs} eq 'ARRAY';
+        @allowed_langs = @{$conf->{langs}};
+        $debug = $conf->{debug};
+    }
 
     # Reject languages our users do not understand
 	# Also emits a logline we can fail2ban on
-    if ( !any { langof($body_ref) } @allowed_langs ) {
-        $ctx->setreply(550, '5.7.6', "Language used in mail body is incomprehensible to our users");
+    my $lang = langof($body_chunk);
+    warn "Body language of $lang detected" if $debug;
+    if ( !any { $lang eq $_ } @allowed_langs ) {
+        warn "Unrecognized language $lang detected, rejecting" if $debug;
+        $ctx->setreply((__PACKAGE__->config_code()), "Language used in mail body is incomprehensible to our users");
         return __PACKAGE__->config_action();
     }
 
     # Instructs Sendmail::Milter to do SMFIS_CONTINUE
-    return undef;
+    return __PACKAGE__->cont();
 }
 
 1;
