@@ -44,6 +44,7 @@ sub new {
         pidfile => $config->param('service.pidfile') // "/var/run/yamilter.pid",
         sock    => $config->param('service.sock')    // "/var/run/yamilter.sock",
         workers => $config->param('service.workers') // 10,
+        cfile   => $cfile,
     );
     foreach my $recipe (@blocks) {
         next if $recipe eq 'service';
@@ -60,6 +61,7 @@ sub new {
 sub pidfile { $_[0]->{pidfile} }
 sub sock    { $_[0]->{sock}    }
 sub workers { $_[0]->{workers} }
+sub cfile   { $_[0]->{cfile}   }
 
 =head1 STATIC METHODS
 
@@ -120,8 +122,9 @@ sub run {
     my $self = shift;
 
 	print "YAMilter starting up...\n";
+    print "YAMilter using config file ".$self->cfile()."\n";
 
-	unlink $self->pidfile() if -e $self->pidfile();
+	unlink $self->pidfile()   if -e $self->pidfile();
 	unlink $self->sock() 	  if -e $self->sock();
 
 	print { open(my $fh, '>', $self->pidfile()); $fh } $$;
