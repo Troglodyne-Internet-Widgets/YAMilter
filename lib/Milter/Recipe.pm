@@ -27,6 +27,7 @@ Creates the Milter recipe singleton.  Subsequent calls simply return the same ob
 =cut
 
 my $DEBUG=0;
+my $NO_ACCUM=0;
 
 # This here is what you call a 'singleton'
 my $singleton;
@@ -43,13 +44,18 @@ sub new {
     my @blocks = grep { $_ ne 'service' } ($config->get_block());
 
     my %obj = (
-        pidfile => $config->param('service.pidfile') // "/var/run/yamilter.pid",
-        sock    => $config->param('service.sock')    // "/var/run/yamilter.sock",
-        workers => $config->param('service.workers') // 10,
-        cfile   => $cfile,
-        debug   => $config->param('service.debug') // 0,
+        pidfile  => $config->param('service.pidfile') // "/var/run/yamilter.pid",
+        sock     => $config->param('service.sock')    // "/var/run/yamilter.sock",
+        workers  => $config->param('service.workers') // 10,
+        cfile    => $cfile,
+        debug    => $config->param('service.debug') // 0,
+        no_accum => $config->param('service.no_accum') // 0,
     );
+
+    # Set things that callbacks need to be aware of
     $DEBUG = $obj{debug};
+    $NO_ACCUM = $obj{no_accum};
+
     foreach my $recipe (@blocks) {
         next if $recipe eq 'service';
         require "Milter/Recipe/$recipe.pm" or do {
@@ -155,6 +161,33 @@ sub config_code {
 
 Actually run the milter.
 
+Sets up some default milter callbacks that generally do the right thing:
+
+=over 4
+
+=item 1)
+Continue until EOM, then accept.  It is presumed any milter callbacks you configure do what they need to do before this point.
+
+=item 2)
+On Connect() we setpriv an empty hashref that you can store connection specific state within to support functionality requiring multiple callbacks.
+
+=item 3)
+On Header() and Body() we accumulate the header and body fragments into the 'header' and 'body' keys of said hashref, that you might consult them in EOH, EOB and EOM.
+
+=back
+
+3. Has some consequences in that if you don't limit the size of msgs and headers.
+With 10 workers each handling 100 conns, your upper limit if say, you get a bunch of 1MB mails would be ~1GB of ram worst case.
+
+DOS prevention is outside the scope of this milter.  You should limit the scope of such with mailserver size limits and # of workers available to the milter.
+
+If absolutely necessary, accumulation can be disabled with the C<service.no_accum> config flag, but you will need to use Milter modules which can stream rather than slurp.
+This is advertised to modules as the C<no_accum> flag passed in their config, so they can make sane decisions about this.
+It is necessary that Milter::Recipe child modules document what they do about this.
+
+The acccumulation feature is primarily here to ease development and testing of new milters,
+but there exist rare problems which require full context to be correct and which have incompressible intermediate results.
+
 =cut
 
 sub run {
@@ -195,13 +228,27 @@ sub run {
 
 my %cb = (
     negotiate => \&cont,
-	connect   => \&cont,
+	connect   => sub { $ctx->setpriv({}); return cont(); },
 	helo      => \&cont,
 	envfrom   => \&cont,
 	envrcpt   => \&cont,
-	header    => \&cont,
+	header    => sub {
+        my ($ctx, $data, $len) = @_;
+        return cont() if $NO_ACCUM;
+        my $p = $ctx->getpriv();
+        $p->{header} .= $data;
+        $ctx->setpriv($p);
+        return cont();
+    },
 	eoh       => \&cont,
-    body      => \&cont,
+    body      =>  sub {
+        my ($ctx, $data, $len) = @_;
+        return cont() if $NO_ACCUM;
+        my $p = $ctx->getpriv();
+        $p->{body} .= $data;
+        $ctx->setpriv($p);
+        return cont();
+    },
 	eom       => \&accept,
 	abort     => \&cont,
 	close     => \&cont,
