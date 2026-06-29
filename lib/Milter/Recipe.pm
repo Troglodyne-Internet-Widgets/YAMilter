@@ -26,13 +26,14 @@ Creates the Milter recipe singleton.  Subsequent calls simply return the same ob
 
 =cut
 
-my $DEBUG=0;
-my $NO_ACCUM=0;
+my $DEBUG    = 0;
+my $NO_ACCUM = 0;
 
 # This here is what you call a 'singleton'
 my $singleton;
+
 sub new {
-    my ($class, $cfile) = @_;
+    my ( $class, $cfile ) = @_;
 
     return $singleton if $singleton;
 
@@ -41,19 +42,19 @@ sub new {
     my $config = Config::Simple->new($cfile);
 
     #XXX passing no block to get_block returns the list of blocks, but this is undocumented.
-    my @blocks = grep { $_ ne 'service' } ($config->get_block());
+    my @blocks = grep { $_ ne 'service' } ( $config->get_block() );
 
     my %obj = (
         pidfile  => $config->param('service.pidfile') // "/var/run/yamilter.pid",
         sock     => $config->param('service.sock')    // "/var/run/yamilter.sock",
         workers  => $config->param('service.workers') // 10,
         cfile    => $cfile,
-        debug    => $config->param('service.debug') // 0,
+        debug    => $config->param('service.debug')    // 0,
         no_accum => $config->param('service.no_accum') // 0,
     );
 
     # Set things that callbacks need to be aware of
-    $DEBUG = $obj{debug};
+    $DEBUG    = $obj{debug};
     $NO_ACCUM = $obj{no_accum};
 
     foreach my $recipe (@blocks) {
@@ -64,15 +65,15 @@ sub new {
         $obj{$recipe} = $config->get_block($recipe);
     }
 
-    $singleton = bless(\%obj, $class);
+    $singleton = bless( \%obj, $class );
     return $singleton;
 }
 
 sub pidfile { $_[0]->{pidfile} }
-sub sock    { $_[0]->{sock}    }
+sub sock    { $_[0]->{sock} }
 sub workers { $_[0]->{workers} }
-sub cfile   { $_[0]->{cfile}   }
-sub debug   { $_[0]->{debug}   }
+sub cfile   { $_[0]->{cfile} }
+sub debug   { $_[0]->{debug} }
 
 =head1 STATIC METHODS
 
@@ -123,9 +124,9 @@ This is the sub to call to accomplish that:
 
 sub config_action {
     my $class = shift;
-    my $conf = $class->config();
+    my $conf  = $class->config();
     warn "Taking configured action of $conf->{action} ($action{$conf->{action}})" if $conf->{debug};
-    return $action{$conf->{action}} if $conf->{action};
+    return $action{ $conf->{action} }                                             if $conf->{action};
     return $action{reject};
 }
 
@@ -140,19 +141,19 @@ Dies in the event your action has no appropriate code (e.g. discard, loop).
 =cut
 
 my %action2code = (
-    SMFIS_REJECT()   => [550, '5.7.1'],
-    SMFIS_TEMPFAIL() => [450, '4.7.1'],
-    SMFIS_ACCEPT()   => [250, '2.0.0'],
-    SMFIS_CONTINUE() => [354, '3.0.0'],
+    SMFIS_REJECT()   => [ 550, '5.7.1' ],
+    SMFIS_TEMPFAIL() => [ 450, '4.7.1' ],
+    SMFIS_ACCEPT()   => [ 250, '2.0.0' ],
+    SMFIS_CONTINUE() => [ 354, '3.0.0' ],
 );
 
 sub config_code {
     my $class  = shift;
     my $action = $class->config_action();
     warn "Action: $action";
-    my $code   = $action2code{$action};
+    my $code = $action2code{$action};
     die "No appropriate code available for the configured action" unless $code;
-    return @$code
+    return @$code;
 }
 
 =head1 METHODS
@@ -193,19 +194,22 @@ but there exist rare problems which require full context to be correct and which
 sub run {
     my $self = shift;
 
-	print "YAMilter starting up...\n";
-    print "YAMilter using config file ".$self->cfile()."\n";
+    print "YAMilter starting up...\n";
+    print "YAMilter using config file " . $self->cfile() . "\n";
 
-	unlink $self->pidfile()   if -e $self->pidfile();
-	unlink $self->sock() 	  if -e $self->sock();
+    unlink $self->pidfile() if -e $self->pidfile();
+    unlink $self->sock()    if -e $self->sock();
 
-	print { open(my $fh, '>', $self->pidfile()); $fh } $$;
-    print "YAMilter listening on ".$self->sock()."\n";
+    print {
+        open( my $fh, '>', $self->pidfile() );
+        $fh
+    } $$;
+    print "YAMilter listening on " . $self->sock() . "\n";
 
     print "Loaded milter modules: ";
-    print join(',', (map { my $subj = $_; $subj =~ s/^Milter::Recipe:://; $subj } loaded_recipes()))."\n";
+    print join( ',', ( map { my $subj = $_; $subj =~ s/^Milter::Recipe:://; $subj } loaded_recipes() ) ) . "\n";
 
-    my $listen = "local:".$self->sock();
+    my $listen    = "local:" . $self->sock();
     my %callbacks = $self->cb();
 
     my $dispatcher = Sendmail::PMilter::prefork_dispatcher(
@@ -213,45 +217,49 @@ sub run {
         max_requests_per_child => 100,
     );
 
-    $Sendmail::PMilter::DEBUG=1 if $self->debug();
+    $Sendmail::PMilter::DEBUG = 1 if $self->debug();
     my $milter = Sendmail::PMilter->new();
-    $milter->setconn($listen) || die "Could not setup socket for YAMilter";
-    $milter->register("YAMilter", \%callbacks, SMFI_V6_PROT) || die "Could not register YAMilter";
+    $milter->setconn($listen)                                  || die "Could not setup socket for YAMilter";
+    $milter->register( "YAMilter", \%callbacks, SMFI_V6_PROT ) || die "Could not register YAMilter";
     $milter->set_dispatcher($dispatcher);
     $milter->main() || die "Could not run YAMilter";
 
-	unlink $self->pidfile();
-	unlink $self->sock();
+    unlink $self->pidfile();
+    unlink $self->sock();
 
-	print "Shutting down YAMilter.\n";
+    print "Shutting down YAMilter.\n";
 }
 
 my %cb = (
     negotiate => \&cont,
-	connect   => sub { $ctx->setpriv({}); return cont(); },
-	helo      => \&cont,
-	envfrom   => \&cont,
-	envrcpt   => \&cont,
-	header    => sub {
-        my ($ctx, $data, $len) = @_;
+    connect   => sub {
+        my ($ctx) = @_;
+        $ctx->setpriv( {} );
+        return cont();
+    },
+    helo    => \&cont,
+    envfrom => \&cont,
+    envrcpt => \&cont,
+    header  => sub {
+        my ( $ctx, $data, $len ) = @_;
         return cont() if $NO_ACCUM;
         my $p = $ctx->getpriv();
         $p->{header} .= $data;
         $ctx->setpriv($p);
         return cont();
     },
-	eoh       => \&cont,
-    body      =>  sub {
-        my ($ctx, $data, $len) = @_;
+    eoh  => \&cont,
+    body => sub {
+        my ( $ctx, $data, $len ) = @_;
         return cont() if $NO_ACCUM;
         my $p = $ctx->getpriv();
         $p->{body} .= $data;
         $ctx->setpriv($p);
         return cont();
     },
-	eom       => \&accept,
-	abort     => \&cont,
-	close     => \&cont,
+    eom   => \&accept,
+    abort => \&cont,
+    close => \&cont,
 );
 
 =head2 cb
@@ -266,21 +274,21 @@ sub cb {
     return %full_cb if %full_cb;
 
     my %intermediate;
-    @intermediate{keys(%cb)} = map {[[ Default => $_ ]]} values(%cb);
+    @intermediate{ keys(%cb) } = map { [ [ Default => $_ ] ] } values(%cb);
 
     no strict 'refs';
-    foreach my $lm ($self->loaded_recipes()) {
-        my $cb = "$lm\:\:cb";
-        my %mcb = %{*$cb{HASH}};
+    foreach my $lm ( $self->loaded_recipes() ) {
+        my $cb  = "$lm\:\:cb";
+        my %mcb = %{ *$cb{HASH} };
         die "Milter recipes must have at least one callback" unless %mcb;
-        foreach my $callback (keys(%mcb)) {
-            push(@{$intermediate{$callback}}, [ $lm => $mcb{$callback} ]);
+        foreach my $callback ( keys(%mcb) ) {
+            push( @{ $intermediate{$callback} }, [ $lm => $mcb{$callback} ] );
         }
     }
     use strict 'refs';
 
-    foreach my $callback (keys(%intermediate)) {
-        $full_cb{$callback} = sub { _run_callbacks($callback, \@_, @{$intermediate{$callback}}) }
+    foreach my $callback ( keys(%intermediate) ) {
+        $full_cb{$callback} = sub { _run_callbacks( $callback, \@_, @{ $intermediate{$callback} } ) }
     }
 
     return %full_cb;
@@ -302,7 +310,7 @@ use warnings;
 # Just run everything in order until we short-circuit
 sub _run_callbacks {
     my $callback = shift;
-    my $args = shift;
+    my $args     = shift;
     foreach my $cbo (@_) {
         my $module = $cbo->[0];
         my $cb     = $cbo->[1];
@@ -333,11 +341,11 @@ sub _inc2mod {
 }
 
 sub accept {
-	return SMFIS_ACCEPT;
+    return SMFIS_ACCEPT;
 }
 
 sub cont {
-	return SMFIS_CONTINUE;
+    return SMFIS_CONTINUE;
 }
 
 sub reject {

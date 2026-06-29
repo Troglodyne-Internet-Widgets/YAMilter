@@ -31,8 +31,9 @@ Prints this message.
 sub main {
     my @args = @_;
 
-    my ($cfile, $help);
-    GetOptionsFromArray(\@args, 
+    my ( $cfile, $help );
+    GetOptionsFromArray(
+        \@args,
         'config=s' => \$cfile,
         'help'     => \$help,
     );

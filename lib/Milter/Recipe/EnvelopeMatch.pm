@@ -20,7 +20,6 @@ It should be possible to have full support for such, however.
 
 =cut
 
-
 our %cb = (
     envfrom => \&store_envelope,
     envrcpt => \&store_envelope,
@@ -29,39 +28,40 @@ our %cb = (
 
 my %envelope;
 
-sub store_envelope_sender    { store_envelope('sender', @_ ) }
-sub store_envelope_recipient { store_envelope('recipient', @_ ) }
+sub store_envelope_sender    { store_envelope( 'sender',    @_ ) }
+sub store_envelope_recipient { store_envelope( 'recipient', @_ ) }
 
 sub store_envelope {
-    my ($type, $ctx, $data, $dlen) = @_;
+    my ( $type, $ctx, $data, $dlen ) = @_;
+
     # Email validation is basically crazy.
-    my ($addr) = $data =~ m/<?(.+@[^>]+)>?/
+    my ($addr) = $data =~ m/<?(.+@[^>]+)>?/;
 
     my $stash = $ctx->getpriv();
-    $stash{$type} = $addr || '';
+    $stash->{$type} = $addr || '';
     $ctx->setpriv($stash);
 }
 
 sub check_header_vs_envelope {
-    my ($ctx, $data, $dlen) = @_;
+    my ( $ctx, $data, $dlen ) = @_;
 
     my $stash = $ctx->gepriv();
-    my $conf = __PACKAGE__->config();
+    my $conf  = __PACKAGE__->config();
     my $debug = $conf->{debug};
 
     # You can only have one from, but many to.
     my ($fromline) = $stash->{header} =~ m/^From:/mg;
     my ($toline)   = $stash->{header} =~ m/^To:/mg;
 
-    if ( $fromline !~ m/\Q$stash{sender}\E/ ) ) {
+    if ( $fromline !~ m/\Q$stash->{sender}\E/ ) {
         warn "Envelope sender does not match header From, rejecting" if $debug;
-        $ctx->setreply((__PACKAGE__->config_code()), "Envelope sender does not match From in header");
+        $ctx->setreply( ( __PACKAGE__->config_code() ), "Envelope sender does not match From in header" );
         return __PACKAGE__->config_action();
     }
 
-    if ( $toline !~ m/\Q$stash{recipient}\E/) {
+    if ( $toline !~ m/\Q$stash->{recipient}\E/ ) {
         warn "Envelope recipient does not present within To:, rejecting" if $debug;
-        $ctx->setreply((__PACKAGE__->config_code()), "Envelope recipient not present within To: in header");
+        $ctx->setreply( ( __PACKAGE__->config_code() ), "Envelope recipient not present within To: in header" );
         return __PACKAGE__->config_action();
     }
     return __PACKAGE__->cont();
