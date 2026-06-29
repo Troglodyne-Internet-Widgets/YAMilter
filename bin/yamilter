@@ -2,6 +2,8 @@
 
 package YAMilter;
 
+#ABSTRACT: Yamilter: Yet another milter program
+
 use strict;
 use warnings;
 

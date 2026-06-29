@@ -1,5 +1,7 @@
 package Milter::Recipe::EnvelopeMatch;
 
+#ABSTRACT: Milter to ensure the envelope sender and From: header in email matches
+
 use strict;
 use warnings;
 

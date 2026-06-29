@@ -1,5 +1,7 @@
 package Milter::Recipe::Language;
 
+#ABSTRACT: Milter which will reject mails written in languages your users don't understand
+
 use strict;
 use warnings;
 
