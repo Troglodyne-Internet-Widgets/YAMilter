@@ -44,7 +44,7 @@ sub getconfig {
     $ncf->param('service.pidfile', $pid);
     $ncf->param('service.workers', 1);
     $ncf->param('service.f',       $cfg_file );
-    $ncf->param('service.debug', 1);
+    #$ncf->param('service.debug', 1);
 
     $ncf->write($cfg_file);
 

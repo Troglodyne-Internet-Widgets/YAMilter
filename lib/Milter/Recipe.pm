@@ -150,7 +150,7 @@ my %action2code = (
 sub config_code {
     my $class  = shift;
     my $action = $class->config_action();
-    warn "Action: $action";
+    warn "Action: $action" if $DEBUG;
     my $code = $action2code{$action};
     die "No appropriate code available for the configured action" unless $code;
     return @$code;
@@ -320,7 +320,7 @@ sub _run_callbacks {
             no warnings qw{uninitialized};
             my $res_trans = $mr{$res};
             use warnings;
-            warn "Response from callback: $res_trans ($res)";
+            warn "Response from callback: $res_trans ($res)" if $DEBUG;
         }
         return $res if defined $res && $res ne SMFIS_CONTINUE;
     }

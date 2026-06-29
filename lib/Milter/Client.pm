@@ -183,7 +183,7 @@ sub sendmail {
 
         # Don't care about the return of the option negotiation process
         next                      if $res eq SMFIC_OPTNEG;
-        warn $payload             if $payload;
+        #warn $payload             if $payload;
         return ( $res, $payload ) if $res ne SMFIR_CONTINUE;
     }
     return ( SMFIR_CONTINUE, undef );
