@@ -295,6 +295,26 @@ sub config_code {
     return @$code;
 }
 
+=head2 $class->config_reply($ctx, $message)
+
+Take the configured action, with C<$message> as the SMTP reply when the action has one (reject and tempfail).
+Returns the action, so a callback which has made up its mind can end with:
+
+    return __PACKAGE__->config_reply( $ctx, "Your mail is not welcome here" );
+
+=cut
+
+sub config_reply {
+    my ( $class, $ctx, $message ) = @_;
+    my $action = $class->config_action();
+
+    # setreply() only takes 4xx and 5xx replies, and discard has none at all
+    if ( $action eq SMFIS_REJECT || $action eq SMFIS_TEMPFAIL ) {
+        $ctx->setreply( @{ $action2code{$action} }, $message );
+    }
+    return $action;
+}
+
 =head1 METHODS
 
 =head2 run

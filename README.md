@@ -189,6 +189,15 @@ This will map the config action to the appropriate response code to use as the f
 
 Dies in the event your action has no appropriate code (e.g. discard, loop).
 
+## $class->config\_reply($ctx, $message)
+
+Take the configured action, with `$message` as the SMTP reply when the action has one (reject and tempfail).
+Returns the action, so a callback which has made up its mind can end with:
+
+```
+return __PACKAGE__->config_reply( $ctx, "Your mail is not welcome here" );
+```
+
 # METHODS
 
 ## run
