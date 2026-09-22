@@ -65,6 +65,38 @@ Runs made together by C<--each> share a C<batch>.
 
 =back
 
+The reports in L</REPORTS> are views, which can be queried the same way.
+Every view about verdicts has a C<scope> column (C<batch> or C<run>) and a C<scope_id> column (the batch or run id), so pick one with, for example, C<WHERE scope = 'batch' AND scope_id = 3>.
+
+=over 4
+
+=item C<verdicts>
+
+Each message's verdict (C<accept>, C<blocked> or C<error>) in each batch and run.
+In a batch, a message is C<blocked> if any run rejected, deferred, discarded or quarantined it, C<error> if any run timed out or lost the milter, and C<accept> otherwise.
+
+=item C<verdict_counts>, C<run_actions>
+
+Messages per verdict, and per action in each run.
+
+=item C<header_rates>
+
+For each header name, how many messages of each verdict have it (C<accept>, C<blocked>, C<error>), and what percentage of that verdict's messages that is (C<pct_accept> and so forth).
+
+=item C<header_values>, C<sender_domains>, C<helo_names>, C<client_ips>, C<folder_verdicts>, C<reply_counts>
+
+Message counts by header value, envelope sender domain, HELO name, client IP, folder, and milter reply.
+
+=item C<message_summary>, C<verdict_list>
+
+Each message's first folder, From and Subject; and the same with its verdicts.
+
+=item C<action_changes>
+
+Messages whose action differs between two runs (C<before_run>, C<after_run>).
+
+=back
+
 =cut
 
 my @SCHEMA = (
@@ -145,6 +177,110 @@ my @SCHEMA = (
     q{CREATE INDEX IF NOT EXISTS results_action ON results(run_id, action)},
 );
 
+# The canned reports, as views anyone can query from sqlite3 too.  They are recreated on every connect, so they always match this code.
+# Every report view carries scope ('batch' or 'run') and scope_id, so a report is a WHERE on those columns.
+my %VIEWS = (
+
+    # A message's verdict in a batch is the worst of its actions across the runs; in a run, its action.
+    verdicts => q{
+        SELECT 'batch' AS scope, u.batch AS scope_id, r.message_id,
+               CASE WHEN SUM(r.action IN ('reject', 'tempfail', 'discard', 'quarantine')) > 0 THEN 'blocked'
+                    WHEN SUM(r.action != 'accept') > 0 THEN 'error'
+                    ELSE 'accept' END AS verdict
+        FROM results r JOIN runs u ON u.id = r.run_id
+        GROUP BY u.batch, r.message_id
+        UNION ALL
+        SELECT 'run', r.run_id, r.message_id,
+               CASE WHEN r.action IN ('reject', 'tempfail', 'discard', 'quarantine') THEN 'blocked'
+                    WHEN r.action != 'accept' THEN 'error'
+                    ELSE 'accept' END
+        FROM results r
+    },
+    message_summary => q{
+        SELECT m.id AS message_id,
+               (SELECT folder FROM locations WHERE message_id = m.id ORDER BY id LIMIT 1) AS folder,
+               (SELECT COALESCE(decoded, value) FROM headers WHERE message_id = m.id AND name = 'from' ORDER BY pos LIMIT 1) AS "from",
+               (SELECT COALESCE(decoded, value) FROM headers WHERE message_id = m.id AND name = 'subject' ORDER BY pos LIMIT 1) AS subject
+        FROM messages m
+    },
+    verdict_counts => q{
+        SELECT scope, scope_id, verdict, COUNT(*) AS messages FROM verdicts GROUP BY scope, scope_id, verdict
+    },
+    run_actions => q{
+        SELECT u.batch, r.run_id, u.label, r.action, COUNT(*) AS messages
+        FROM results r JOIN runs u ON u.id = r.run_id
+        GROUP BY u.batch, r.run_id, r.action
+    },
+    folder_verdicts => q{
+        SELECT v.scope, v.scope_id, l.folder, COUNT(DISTINCT v.message_id) AS messages,
+               COUNT(DISTINCT CASE WHEN v.verdict = 'accept'  THEN v.message_id END) AS accepted,
+               COUNT(DISTINCT CASE WHEN v.verdict = 'blocked' THEN v.message_id END) AS blocked,
+               COUNT(DISTINCT CASE WHEN v.verdict = 'error'   THEN v.message_id END) AS errors
+        FROM verdicts v JOIN locations l ON l.message_id = v.message_id
+        GROUP BY v.scope, v.scope_id, l.folder
+    },
+
+    # How many messages of each verdict have each header, and what share of all messages of that verdict that is
+    header_rates => q{
+        WITH hv AS (SELECT DISTINCT v.scope, v.scope_id, v.verdict, v.message_id, h.name FROM verdicts v JOIN headers h ON h.message_id = v.message_id),
+             counts AS (
+                SELECT scope, scope_id, name,
+                       SUM(verdict = 'accept') AS accept, SUM(verdict = 'blocked') AS blocked, SUM(verdict = 'error') AS error
+                FROM hv GROUP BY scope, scope_id, name)
+        SELECT c.scope, c.scope_id, c.name, c.accept, c.blocked, c.error,
+               ROUND(100.0 * c.accept  / MAX(1, (SELECT messages FROM verdict_counts t WHERE t.scope = c.scope AND t.scope_id = c.scope_id AND t.verdict = 'accept')), 1)  AS pct_accept,
+               ROUND(100.0 * c.blocked / MAX(1, (SELECT messages FROM verdict_counts t WHERE t.scope = c.scope AND t.scope_id = c.scope_id AND t.verdict = 'blocked')), 1) AS pct_blocked,
+               ROUND(100.0 * c.error   / MAX(1, (SELECT messages FROM verdict_counts t WHERE t.scope = c.scope AND t.scope_id = c.scope_id AND t.verdict = 'error')), 1)   AS pct_error
+        FROM counts c
+    },
+    header_values => q{
+        SELECT v.scope, v.scope_id, v.verdict, h.name, COALESCE(h.decoded, h.value) AS value, COUNT(DISTINCT h.message_id) AS messages
+        FROM verdicts v JOIN headers h ON h.message_id = v.message_id
+        GROUP BY v.scope, v.scope_id, v.verdict, h.name, 5
+    },
+    sender_domains => q{
+        SELECT v.scope, v.scope_id, v.verdict, lower(substr(e.mail_from, instr(e.mail_from, '@') + 1)) AS domain, COUNT(*) AS messages
+        FROM verdicts v JOIN envelope e ON e.message_id = v.message_id
+        WHERE e.mail_from LIKE '%@%'
+        GROUP BY v.scope, v.scope_id, v.verdict, 4
+    },
+    helo_names => q{
+        SELECT v.scope, v.scope_id, v.verdict, lower(e.helo) AS helo, COUNT(*) AS messages
+        FROM verdicts v JOIN envelope e ON e.message_id = v.message_id
+        GROUP BY v.scope, v.scope_id, v.verdict, 4
+    },
+    client_ips => q{
+        SELECT v.scope, v.scope_id, v.verdict, e.client_ip, e.client_host, COUNT(*) AS messages
+        FROM verdicts v JOIN envelope e ON e.message_id = v.message_id
+        WHERE e.client_ip IS NOT NULL
+        GROUP BY v.scope, v.scope_id, v.verdict, e.client_ip
+    },
+    reply_counts => q{
+        SELECT 'batch' AS scope, u.batch AS scope_id, r.action, r.reply, COUNT(*) AS messages
+        FROM results r JOIN runs u ON u.id = r.run_id
+        WHERE r.action != 'accept'
+        GROUP BY u.batch, r.action, r.reply
+        UNION ALL
+        SELECT 'run', r.run_id, r.action, r.reply, COUNT(*)
+        FROM results r
+        WHERE r.action != 'accept'
+        GROUP BY r.run_id, r.action, r.reply
+    },
+    verdict_list => q{
+        SELECT v.scope, v.scope_id, v.verdict, v.message_id AS id, s.folder, s."from", s.subject
+        FROM verdicts v JOIN message_summary s ON s.message_id = v.message_id
+    },
+    action_changes => q{
+        SELECT a.run_id AS before_run, b.run_id AS after_run, a.message_id AS id, s.folder, s.subject, a.action AS before, b.action AS after, b.reply
+        FROM results a
+        JOIN results b ON b.message_id = a.message_id AND b.action != a.action
+        JOIN message_summary s ON s.message_id = a.message_id
+    },
+);
+
+# Views which others are built on must be created first
+my @VIEW_ORDER = ( qw{verdicts message_summary verdict_counts}, grep { !m/^(?:verdicts|message_summary|verdict_counts)\z/ } sort keys %VIEWS );
+
 # Commit this often while indexing, so an interrupted index keeps most of its work
 my $COMMIT_EVERY = 1000;
 
@@ -176,6 +312,10 @@ sub new {
     $dbh->do('PRAGMA synchronous = NORMAL');
     $dbh->do('PRAGMA foreign_keys = ON');
     $dbh->do($_) for @SCHEMA;
+
+    # View names and bodies are the constants in %VIEWS; identifiers cannot be bound
+    $dbh->do("DROP VIEW IF EXISTS $_")       for reverse @VIEW_ORDER;    ## no critic (ValuesAndExpressions::PreventSQLInjection)
+    $dbh->do("CREATE VIEW $_ AS $VIEWS{$_}") for @VIEW_ORDER;            ## no critic (ValuesAndExpressions::PreventSQLInjection)
 
     return bless( { %args, dbh => $dbh }, $class );
 }
@@ -670,62 +810,17 @@ sub finish_run {
     return;
 }
 
+# Each report is a view, the columns shown from it, and whether it is filtered by verdict
 my %REPORTS = (
-    folders => q{
-        SELECT l.folder, COUNT(DISTINCT v.message_id) AS messages,
-               COUNT(DISTINCT CASE WHEN v.verdict = 'accept'  THEN v.message_id END) AS accepted,
-               COUNT(DISTINCT CASE WHEN v.verdict = 'blocked' THEN v.message_id END) AS blocked,
-               COUNT(DISTINCT CASE WHEN v.verdict = 'error'   THEN v.message_id END) AS errors
-        FROM verdicts v JOIN locations l ON l.message_id = v.message_id
-        GROUP BY l.folder ORDER BY messages DESC LIMIT ?
-    },
-    headers => q{
-        WITH totals AS (SELECT verdict, COUNT(*) AS n FROM verdicts GROUP BY verdict),
-             hv AS (SELECT DISTINCT h.message_id, h.name, v.verdict FROM headers h JOIN verdicts v ON v.message_id = h.message_id)
-        SELECT hv.name,
-               SUM(hv.verdict = :verdict) AS messages,
-               ROUND(100.0 * SUM(hv.verdict = :verdict) / MAX(1, (SELECT n FROM totals WHERE verdict = :verdict)), 1) AS pct,
-               ROUND(100.0 * SUM(hv.verdict = 'blocked') / MAX(1, (SELECT n FROM totals WHERE verdict = 'blocked')), 1) AS pct_blocked
-        FROM hv GROUP BY hv.name HAVING messages > 0
-        ORDER BY messages DESC LIMIT :limit
-    },
-    values => q{
-        SELECT COALESCE(h.decoded, h.value) AS value, COUNT(DISTINCT h.message_id) AS messages
-        FROM headers h JOIN verdicts v ON v.message_id = h.message_id
-        WHERE v.verdict = :verdict AND h.name = lower(:header)
-        GROUP BY 1 ORDER BY messages DESC LIMIT :limit
-    },
-    senders => q{
-        SELECT lower(substr(e.mail_from, instr(e.mail_from, '@') + 1)) AS domain, COUNT(*) AS messages
-        FROM envelope e JOIN verdicts v ON v.message_id = e.message_id
-        WHERE v.verdict = :verdict AND e.mail_from LIKE '%@%'
-        GROUP BY 1 ORDER BY messages DESC LIMIT :limit
-    },
-    helo => q{
-        SELECT lower(e.helo) AS helo, COUNT(*) AS messages
-        FROM envelope e JOIN verdicts v ON v.message_id = e.message_id
-        WHERE v.verdict = :verdict
-        GROUP BY 1 ORDER BY messages DESC LIMIT :limit
-    },
-    ips => q{
-        SELECT e.client_ip, e.client_host, COUNT(*) AS messages
-        FROM envelope e JOIN verdicts v ON v.message_id = e.message_id
-        WHERE v.verdict = :verdict AND e.client_ip IS NOT NULL
-        GROUP BY 1 ORDER BY messages DESC LIMIT :limit
-    },
-    replies => q{
-        SELECT r.action, r.reply, COUNT(*) AS messages
-        FROM results r WHERE r.run_id IN (SELECT id FROM chosen_runs) AND r.action NOT IN ('accept')
-        GROUP BY 1, 2 ORDER BY messages DESC LIMIT :limit
-    },
-    list => q{
-        SELECT v.message_id AS id,
-               (SELECT folder FROM locations WHERE message_id = v.message_id ORDER BY id LIMIT 1) AS folder,
-               (SELECT COALESCE(decoded, value) FROM headers WHERE message_id = v.message_id AND name = 'from' ORDER BY pos LIMIT 1) AS "from",
-               (SELECT COALESCE(decoded, value) FROM headers WHERE message_id = v.message_id AND name = 'subject' ORDER BY pos LIMIT 1) AS subject
-        FROM verdicts v WHERE v.verdict = :verdict ORDER BY v.message_id LIMIT :limit
-    },
+    folders => { view => 'folder_verdicts', columns => [qw{folder messages accepted blocked errors}] },
+    values  => { view => 'header_values',   columns => [qw{value messages}],                 verdict => 1 },
+    senders => { view => 'sender_domains',  columns => [qw{domain messages}],                verdict => 1 },
+    helo    => { view => 'helo_names',      columns => [qw{helo messages}],                  verdict => 1 },
+    ips     => { view => 'client_ips',      columns => [qw{client_ip client_host messages}], verdict => 1 },
+    replies => { view => 'reply_counts',    columns => [qw{action reply messages}] },
+    list    => { view => 'verdict_list',    columns => [ qw{id folder}, '"from"', 'subject' ], verdict => 1, order => 'id' },
 );
+my %VERDICTS = map { $_ => 1 } qw{accept blocked error};
 
 =head1 REPORTS
 
@@ -733,9 +828,7 @@ my %REPORTS = (
 
 Run one of the canned reports.
 
-Every report is about one set of verdicts: by default the latest batch of runs, or C<run> or C<batch> to pick another.
-Within a batch, a message's verdict is C<blocked> if any run rejected, deferred or discarded it,
-C<error> if any run timed out or lost the milter, and C<accept> otherwise.
+Every report is about one set of verdicts (see C<verdicts> above): by default the latest batch of runs, or C<run> or C<batch> to pick another.
 
 Options: C<run>, C<batch>, C<limit> (default 25), C<verdict> (default C<accept>) for the reports that list mail of one verdict, C<header> for C<values>, and C<runs> (two run ids) for C<diff>.
 
@@ -788,68 +881,58 @@ Messages whose action differs between two runs (C<runs> option).
 
 sub report {
     my ( $self, $name, %opts ) = @_;
-    my $dbh = $self->dbh();
     $opts{limit}   ||= 25;
     $opts{verdict} ||= 'accept';
+    die "No such verdict '$opts{verdict}'.  Try one of: " . join( ', ', sort keys %VERDICTS ) . "\n" unless $VERDICTS{ $opts{verdict} };
 
-    return $self->_diff( $opts{runs}, $opts{limit} ) if $name eq 'diff';
+    if ( $name eq 'diff' ) {
+        die "diff needs two run ids\n" unless ref $opts{runs} eq 'ARRAY' && @{ $opts{runs} } == 2;
+        return $self->query( 'SELECT id, folder, subject, before, after, reply FROM action_changes WHERE before_run = ? AND after_run = ? ORDER BY id LIMIT ?', @{ $opts{runs} }, $opts{limit} );
+    }
 
-    my @runs = $self->_chosen_runs(%opts);
-    die "No runs to report on.  Replay something first.\n" unless @runs;
-
-    $dbh->do('DROP TABLE IF EXISTS temp.chosen_runs');
-    $dbh->do('CREATE TEMP TABLE chosen_runs (id INTEGER PRIMARY KEY)');
-    $dbh->do( 'INSERT INTO chosen_runs VALUES (?)', undef, $_ ) for @runs;
-
-    $dbh->do('DROP TABLE IF EXISTS temp.verdicts');
-    $dbh->do(
-        q{CREATE TEMP TABLE verdicts AS
-          SELECT message_id,
-                 CASE WHEN SUM(action IN ('reject', 'tempfail', 'discard', 'quarantine')) > 0 THEN 'blocked'
-                      WHEN SUM(action != 'accept') > 0 THEN 'error'
-                      ELSE 'accept' END AS verdict
-          FROM results WHERE run_id IN (SELECT id FROM chosen_runs) GROUP BY message_id}
-    );
+    my ( $scope, $scope_id ) = $self->_scope(%opts);
+    die "No runs to report on.  Replay something first.\n" unless $scope_id;
 
     if ( $name eq 'summary' ) {
         return $self->query(
-            q{SELECT 'batch' AS run, NULL AS label, verdict AS action, COUNT(*) AS messages FROM verdicts GROUP BY verdict
+            q{SELECT 'batch' AS run, NULL AS label, verdict AS action, messages FROM verdict_counts WHERE scope = ? AND scope_id = ?
               UNION ALL
-              SELECT r.run_id, u.label, r.action, COUNT(*) FROM results r JOIN runs u ON u.id = r.run_id
-              WHERE r.run_id IN (SELECT id FROM chosen_runs) GROUP BY r.run_id, r.action},
+              SELECT run_id, label, action, messages FROM run_actions WHERE } . ( $scope eq 'batch' ? 'batch' : 'run_id' ) . ' = ?',
+            $scope, $scope_id, $scope_id
         );
     }
 
-    my $sql = $REPORTS{$name} or die "No such report '$name'.  Try one of: " . join( ', ', sort( 'summary', 'diff', keys(%REPORTS) ) ) . "\n";
+    if ( $name eq 'headers' ) {
+
+        # The verdict names a column, and has been checked against %VERDICTS above; identifiers cannot be bound
+        my $v = $opts{verdict};
+        return $self->query(    ## no critic (ValuesAndExpressions::PreventSQLInjection)
+            "SELECT name, $v AS messages, pct_$v AS pct, pct_blocked FROM header_rates WHERE scope = ? AND scope_id = ? AND $v > 0 ORDER BY $v DESC, name LIMIT ?", $scope, $scope_id, $opts{limit}
+        );
+    }
+
+    my $report = $REPORTS{$name} or die "No such report '$name'.  Try one of: " . join( ', ', sort( 'summary', 'headers', 'diff', keys(%REPORTS) ) ) . "\n";
     die "The values report needs a header\n" if $name eq 'values' && !$opts{header};
 
-    # folders is the one report with positional binds
-    return $self->query( $sql, $opts{limit} ) if $name eq 'folders';
-    return $self->query( $sql, { map { ( ":$_" => $opts{$_} ) } grep { $sql =~ m/:$_\b/ } qw{verdict limit header} } );
+    my @where = ( 'scope = ?', 'scope_id = ?' );
+    my @bind  = ( $scope, $scope_id );
+    if ( $report->{verdict} ) {
+        push @where, 'verdict = ?';
+        push @bind,  $opts{verdict};
+    }
+    if ( $name eq 'values' ) {
+        push @where, 'name = lower(?)';
+        push @bind,  $opts{header};
+    }
+    my $sql = sprintf( 'SELECT %s FROM %s WHERE %s ORDER BY %s LIMIT ?', join( ', ', @{ $report->{columns} } ), $report->{view}, join( ' AND ', @where ), $report->{order} // 'messages DESC' );
+    return $self->query( $sql, @bind, $opts{limit} );
 }
 
-sub _chosen_runs {
+# Which verdicts a report is about: the run asked for, the batch asked for, or the latest batch
+sub _scope {
     my ( $self, %opts ) = @_;
-    my $dbh = $self->dbh();
-    return ( $opts{run} ) if $opts{run};
-    my $batch = $opts{batch} // ( $dbh->selectrow_array('SELECT batch FROM runs ORDER BY id DESC LIMIT 1') );
-    return unless $batch;
-    return @{ $dbh->selectcol_arrayref( 'SELECT id FROM runs WHERE batch = ? ORDER BY id', undef, $batch ) };
-}
-
-sub _diff {
-    my ( $self, $runs, $limit ) = @_;
-    die "diff needs two run ids\n" unless ref $runs eq 'ARRAY' && @$runs == 2;
-    return $self->query(
-        q{SELECT a.message_id AS id,
-                 (SELECT folder FROM locations WHERE message_id = a.message_id ORDER BY id LIMIT 1) AS folder,
-                 (SELECT COALESCE(decoded, value) FROM headers WHERE message_id = a.message_id AND name = 'subject' ORDER BY pos LIMIT 1) AS subject,
-                 a.action AS before, b.action AS after, b.reply
-          FROM results a JOIN results b ON b.message_id = a.message_id AND b.run_id = ?
-          WHERE a.run_id = ? AND a.action != b.action
-          ORDER BY a.message_id LIMIT ?},
-        $runs->[1], $runs->[0], $limit
-    );
+    return ( run   => $opts{run} ) if $opts{run};
+    return ( batch => $opts{batch} // scalar $self->dbh->selectrow_array('SELECT batch FROM runs ORDER BY id DESC LIMIT 1') );
 }
 
 =head2 ($columns, $rows) = query($sql, @bind)

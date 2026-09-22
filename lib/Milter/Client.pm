@@ -230,7 +230,7 @@ sub sendmail {
 
         my ( $res, $payload ) = $sent ? _poll( $sock, $opts{timeout} ) : (CLIENT_EOF);
 
-        # Modifications (and progress reports) come ahead of the final reply to end of message
+        # A milter may send any number of modifications (and progress reports) before its final reply, each a packet of its own
         while ( $MODIFICATIONS{$res} ) {
             push @mods, [ $res, $payload ] unless $res eq SMFIR_PROGRESS;
             ( $res, $payload ) = _poll( $sock, $opts{timeout} );

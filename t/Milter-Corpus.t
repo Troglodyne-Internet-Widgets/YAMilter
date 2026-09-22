@@ -108,6 +108,10 @@ subtest 'reports' => sub {
     my %batch = map { $_->[2] => $_->[3] } grep { $_->[0] eq 'batch' } @$rows;
     is( \%batch, { accept => 2, blocked => 2, error => 1 }, 'a batch blocks what any run blocked, and errors what any run could not finish' );
 
+    ( undef, $rows ) = $corpus->query( q{SELECT verdict, messages FROM verdict_counts WHERE scope = 'batch' AND scope_id = ? ORDER BY verdict}, $first );
+    is( $rows, [ [ 'accept', 2 ], [ 'blocked', 2 ], [ 'error', 1 ] ], 'the views can be queried directly' );
+    like( dies { $corpus->report( 'summary', verdict => 'bogus' ) }, qr/No such verdict 'bogus'/, 'unknown verdict dies' );
+
     ( $cols, $rows ) = $corpus->report( 'summary', run => $first );
     %batch = map { $_->[2] => $_->[3] } grep { $_->[0] eq 'batch' } @$rows;
     is( \%batch, { accept => 4, blocked => 1 }, 'one run on its own' );
