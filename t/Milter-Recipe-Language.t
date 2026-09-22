@@ -26,7 +26,8 @@ fork_and_term(sub { ($result, $payload) = Milter::Client::sendmail(getsock(), @c
 is($result, SMFIR_ACCEPT, "Marked message as ACCEPT when in correct language");
 
 # The body command
-$cmds[8][1] = "Ich bin ein Berliner";
+my ($body) = grep { $_->[0] eq SMFIC_BODY } @cmds;
+$body->[1] = "Ich bin ein Berliner";
 fork_and_term(sub { ($result, $payload) = Milter::Client::sendmail(getsock(), @cmds) }, @args);
 
 # In the event you call setreply(), you will get SMFIR_REPLY as the return regardless of code requested.
