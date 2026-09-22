@@ -218,21 +218,19 @@ sub debug   { $_[0]->{debug} }
 
 =head2 $class->config()
 
-Retrieve the config section relevant to the current class.
+Retrieve the config section relevant to the current class, as a hashref, with the service's C<debug> setting added.
 
 If your Recipe requires configuration, this is the method to call.
+It is a lookup on the singleton, so calling it from every callback costs nothing to speak of.
 
 =cut
 
 sub config {
     my $class = shift;
 
-    state $section;
-    return $section if $section;
-
     my ($recipe) = $class =~ m/::(\w+)$/;
-    my $self = $class->new();
-    $section = $self->{$recipe};
+    my $self     = $class->new();
+    my $section  = $self->{$recipe} //= {};
     $section->{debug} = $self->debug();
     return $section;
 }
