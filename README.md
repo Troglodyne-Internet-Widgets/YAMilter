@@ -55,6 +55,10 @@ It is written to refer to `/etc/yamilter.cfg` as the config file.
 The `service` section above allows configuration of where the PID/Socket files live, and how many workers to run.
 The values above, apart from `order`, are the defaults if you omit these parameters.
 
+`decision_log` names a file to append a line to for every decision a recipe makes (anything but continue):
+the time, the MTA's queue id (the `{i}` macro, which postfix sends), the recipe, the callback, and the result, separated by tabs.
+Off unless set.  `yamilter-corpus` uses it to record which recipe decided each message.
+
 `order` sets the order recipes run in, which matters when one can accept a message outright (see [Milter::Recipe::MailingList](https://metacpan.org/pod/Milter%3A%3ARecipe%3A%3AMailingList)),
 since that ends milter processing for the message.
 Recipes it does not name run after those it does, alphabetically; by default that is all of them.

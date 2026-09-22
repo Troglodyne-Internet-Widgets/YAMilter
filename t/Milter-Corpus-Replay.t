@@ -55,6 +55,11 @@ subtest 'run' => sub {
     is( $got{'Ihre Bestellung'}[1],  'tempfail', 'german mail deferred' );
     like( $got{'Ihre Bestellung'}[2], qr/^450 4\.7\.1 /, '... with the configured reply' );
 
+    ( undef, $rows ) = $corpus->query( q{SELECT h.value, r.recipe FROM results r JOIN headers h ON h.message_id = r.message_id AND h.name = 'subject' WHERE r.run_id = ? ORDER BY h.value}, $run );
+    my %recipe = map { @$_ } @$rows;
+    is( $recipe{'Ihre Bestellung'},  'Language', 'the recipe which decided is recorded, from the decision_log' );
+    is( $recipe{'Quarterly report'}, undef,      '... and none for mail no recipe decided' );
+
     ( undef, $rows ) = $corpus->query( 'SELECT label, config, recipes, finished IS NOT NULL, milter_log FROM runs WHERE id = ?', $run );
     my ( $label, $config, $recipes, $finished, $log ) = @{ $rows->[0] };
     is( $label,  'english',                              'labelled' );
@@ -98,7 +103,7 @@ subtest 'each' => sub {
 
     my ( $cols, $summary ) = $corpus->report('summary');
     my ($blocked) = grep { $_->[0] eq 'batch' && $_->[2] eq 'blocked' } @$summary;
-    is( $blocked->[3], 2, 'the batch blocks what either recipe blocked' );
+    is( $blocked->[4], 2, 'the batch blocks what either recipe blocked' );
 };
 
 subtest 'service.order' => sub {
