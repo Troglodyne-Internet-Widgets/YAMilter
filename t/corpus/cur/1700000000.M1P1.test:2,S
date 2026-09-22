@@ -1,0 +1,18 @@
+Return-Path: <sender@test.test>
+Delivered-To: rcpt@test.test
+Received: from localhost (localhost [127.0.0.1])
+	by mx.test.test (Postfix) with ESMTP id AAAA
+	for <rcpt@test.test>; Mon, 1 Jan 2024 00:00:00 +0000
+Received: from mail.test.test (relay.test.test [192.0.2.10])
+	by mx.test.test (Postfix) with ESMTPS id BBBB;
+	Mon, 1 Jan 2024 00:00:00 +0000
+From: Some Sender <sender@test.test>
+To: rcpt@test.test
+Subject: Quarterly report
+Message-ID: <english@test.test>
+
+Hello there, I am writing to you about the quarterly report which we
+discussed at the meeting last week. The numbers are looking better than we
+expected, and the team would like to thank everyone for their hard work.
+Please find the summary below and let me know if you have any questions
+about the figures or the plans for the next quarter.

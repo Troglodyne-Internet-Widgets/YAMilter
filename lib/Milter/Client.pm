@@ -33,8 +33,12 @@ As you might imagine, that complicates the sort of automated testing you might w
         [SMFIC_MAIL,    '<test@test.test>'], # Envelope Sender
         [SMFIC_RCPT,    '<test@test.test>'], # Envelope Recipient
         [SMFIC_DATA,    ],
-        [SMFIC_HEADER,  "From: test\@test.test\nTo: test\@test.test\nSubject: Test\n\n"],
+        # One command per header: name, then value.
+        [SMFIC_HEADER,  'From',    'test@test.test'],
+        [SMFIC_HEADER,  'To',      'test@test.test'],
+        [SMFIC_HEADER,  'Subject', 'Test'],
         [SMFIC_EOH,     ],
+        # Bodies over 64k need to be sent in chunks, see body_chunks()
         [SMFIC_BODY,    "Testing 123"],
         [SMFIC_BODYEOB, ],
         [SMFIC_QUIT,    ],
@@ -44,12 +48,18 @@ As you might imagine, that complicates the sort of automated testing you might w
     # You'll get some kind of SMFIR_* constant returned, usually SMFIR_REPLYCODE when it's a REJ/DEFER w/ SMTP & ESMTP response codes.
     my ($code, $payload) = Milter::Client::sendmail($sock, @gibbering);
 
+    # Pass options as a hashref before the commands to find out when the milter hangs or dies,
+    # rather than presuming it wanted you to continue.
+    my ($code, $payload) = Milter::Client::sendmail($sock, { timeout => 5 }, @gibbering);
+    warn "Milter hung"  if $code eq CLIENT_TIMEOUT;
+    warn "Milter died"  if $code eq CLIENT_EOF;
+
 =cut
 
 use strict;
 use warnings;
 
-use Time::HiRes qw{usleep};
+use Time::HiRes ();
 
 #use Sendmail::PMilter qw{:all};
 
@@ -92,6 +102,9 @@ our %EXPORT_TAGS = (
           SMFIA_UNIX
           SMFIA_INET
           SMFIA_INET6
+          CLIENT_TIMEOUT
+          CLIENT_EOF
+          MILTER_CHUNK_SIZE
         }
     ],
 );
@@ -138,6 +151,13 @@ use constant SMFIA_UNIX    => 'L';
 use constant SMFIA_INET    => '4';
 use constant SMFIA_INET6   => '6';
 
+# Not part of the milter protocol.  Returned by sendmail() when asked to report on a hung or dead milter.
+use constant CLIENT_TIMEOUT => 'timeout';
+use constant CLIENT_EOF     => 'eof';
+
+# Largest body chunk a milter will accept unless it negotiates otherwise (MILTER_CHUNK_SIZE in libmilter)
+use constant MILTER_CHUNK_SIZE => 65535;
+
 # Pack templates for sending over messages
 my %templates = (
     SMFIC_OPTNEG()  => "A N N N",
@@ -146,77 +166,141 @@ my %templates = (
     SMFIC_MAIL()    => "A Z*",
     SMFIC_RCPT()    => "A Z*",
     SMFIC_DATA()    => "A",
-    SMFIC_HEADER()  => "A Z*",
+    SMFIC_HEADER()  => "A Z* Z*",
     SMFIC_EOH()     => "A",
-    SMFIC_BODY()    => "A Z*",
+    SMFIC_BODY()    => "A a*",
     SMFIC_BODYEOB() => "A",
     SMFIC_QUIT()    => "A",
 );
 
 =head1 FUNCTIONS
 
-=head2 ($code, $payload) = sendmail($socket, @commands)
+=head2 ($code, $payload, $modifications) = sendmail($socket, [\%options], @commands)
 
 Send commands to a milter & read the responses.
 
 Terminates whenever you run out of commands or get something other than SMFIR_CONTINUE.
 
-Dies in the event the socket hangs.
+Requests to modify the message (add a header, change the body, quarantine it and so forth) are not a final reply.
+They are returned in C<$modifications>, an arrayref of C<[ $code, $payload ]>.
+
+Headers are sent one per command, as C<[SMFIC_HEADER, $name, $value]>.
+The older form of C<[SMFIC_HEADER, $all_the_headers]> still works, but the milter will see it as one header with an empty value.
+
+No reply is waited for after SMFIC_QUIT, as milters do not send one.
+
+Without options, a milter which says nothing within a second is presumed to want you to continue.
+Pass a hashref of options before the commands to change that:
+
+=over 4
+
+=item C<timeout>
+
+Seconds (fractions allowed) to wait for each reply.
+When given, a milter which does not reply in time returns C<CLIENT_TIMEOUT>, and one which hangs up returns C<CLIENT_EOF>.
+
+=back
 
 See Synopsis for more details.
 
 =cut
 
+my %MODIFICATIONS = map { $_ => 1 } ( SMFIR_ADDRCPT, SMFIR_DELRCPT, SMFIR_ADDRCPT_PAR, SMFIR_REPLBODY, SMFIR_ADDHEADER, SMFIR_INSHEADER, SMFIR_CHGHEADER, SMFIR_CHGFROM, SMFIR_QUARANTINE, SMFIR_PROGRESS );
+
 # Bogus sendmail.
 sub sendmail {
     my ( $sock, @cmds ) = @_;
+    my %opts = ref $cmds[0] eq 'HASH' ? %{ shift @cmds } : ();
+    my @mods;
+
+    # A milter which hangs up is reported (or presumed to continue), not fatal
+    local $SIG{PIPE} = 'IGNORE';
 
     foreach my $args (@cmds) {
         my $action = $args->[0];
-        my $tmpl   = "$templates{$action}";
-        my $packed = pack( $tmpl, @$args );
+
+        # The single string form of SMFIC_HEADER needs the value terminator added
+        my @args   = ( $action eq SMFIC_HEADER && @$args == 2 ) ? ( @$args, '' ) : @$args;
+        my $packed = pack( $templates{$action}, @args );
 
         # What we will actually send over the wire
         my $packed_with_length = pack( 'N a*', length($packed), $packed );
-        syswrite $sock, $packed_with_length;
-        my ( $res, $payload ) = _poll($sock);
+        my $sent = syswrite $sock, $packed_with_length;
+        next if $action eq SMFIC_QUIT;
+
+        my ( $res, $payload ) = $sent ? _poll( $sock, $opts{timeout} ) : (CLIENT_EOF);
+
+        # A milter may send any number of modifications (and progress reports) before its final reply, each a packet of its own
+        while ( $MODIFICATIONS{$res} ) {
+            push @mods, [ $res, $payload ] unless $res eq SMFIR_PROGRESS;
+            ( $res, $payload ) = _poll( $sock, $opts{timeout} );
+        }
+
+        if ( $res eq CLIENT_TIMEOUT || $res eq CLIENT_EOF ) {
+            return ( $res, undef, \@mods ) if defined $opts{timeout};
+            next;
+        }
 
         # Don't care about the return of the option negotiation process
-        next                      if $res eq SMFIC_OPTNEG;
-        #warn $payload             if $payload;
-        return ( $res, $payload ) if $res ne SMFIR_CONTINUE;
+        next                              if $res eq SMFIC_OPTNEG;
+        return ( $res, $payload, \@mods ) if $res ne SMFIR_CONTINUE;
     }
-    return ( SMFIR_CONTINUE, undef );
+    return ( SMFIR_CONTINUE, undef, \@mods );
 }
 
+=head2 @commands = body_chunks($body)
+
+Split a message body into SMFIC_BODY commands no bigger than MILTER_CHUNK_SIZE, as an MTA would.
+
+An empty body yields no commands.
+
+=cut
+
+sub body_chunks {
+    my ($body) = @_;
+    my @chunks;
+    for ( my $pos = 0; $pos < length($body); $pos += MILTER_CHUNK_SIZE ) {
+        push @chunks, [ SMFIC_BODY, substr( $body, $pos, MILTER_CHUNK_SIZE ) ];
+    }
+    return @chunks;
+}
+
+# Read one reply packet: 4 byte length, then that many bytes of code & payload.
 sub _poll {
-    my $sock       = shift;
-    my $buf        = '';
-    my $buf_actual = '';
+    my ( $sock, $timeout ) = @_;
+    $timeout ||= 1;
 
-    # If all else fails and we end up reading a dead pipe
-    local $SIG{ALRM} = sub { die };
-
-    for ( 1 .. 1000 ) {
-
-        # Don't let things get out of hand
-        alarm 1;
-        sysread( $sock, $buf, 10000 );
-        alarm 0;
-
-        $buf_actual .= $buf;
-        my ( $len, $code, $payload ) = unpack( "NAa*", $buf_actual );
-        return ( $code, $payload ) if $code;
-
-        # If there's nothing (meaningful) in the pipe, give up.
-        last if length($buf_actual) >= 5;
-
-        # Otherwise wait for output
-        usleep 1000;
+    my $packet;
+    local $@;
+    my $ok = eval {
+        local $SIG{ALRM} = sub { die CLIENT_TIMEOUT . "\n" };
+        Time::HiRes::alarm($timeout);
+        my $len = unpack( 'N', _read_exactly( $sock, 4 ) );
+        $packet = _read_exactly( $sock, $len );
+        Time::HiRes::alarm(0);
+        1;
+    };
+    Time::HiRes::alarm(0);
+    if ( !$ok ) {
+        my $err = $@;
+        chomp $err;
+        return CLIENT_TIMEOUT if $err eq CLIENT_TIMEOUT;
+        return CLIENT_EOF;
     }
 
-    # Presume that if we got no response within timeout, we should continue
-    return SMFIR_CONTINUE;
+    my ( $code, $payload ) = unpack( 'a a*', $packet );
+    $payload =~ s/\0\z// if defined $payload;
+    return ( $code, $payload );
+}
+
+sub _read_exactly {
+    my ( $sock, $want ) = @_;
+    my $buf = '';
+    while ( length($buf) < $want ) {
+        my $got = sysread( $sock, $buf, $want - length($buf), length($buf) );
+        die CLIENT_EOF . "\n" unless $got;
+    }
+    return $buf;
 }
 
 1;

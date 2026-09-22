@@ -174,6 +174,7 @@ On Connect() we setpriv an empty hashref that you can store connection specific 
 
 =item 3)
 On Header() and Body() we accumulate the header and body fragments into the 'header' and 'body' keys of said hashref, that you might consult them in EOH, EOB and EOM.
+Each header is accumulated as a C<"Name: value\n"> line.
 
 =back
 
@@ -241,10 +242,10 @@ my %cb = (
     envfrom => \&cont,
     envrcpt => \&cont,
     header  => sub {
-        my ( $ctx, $data, $len ) = @_;
+        my ( $ctx, $name, $value ) = @_;
         return cont() if $NO_ACCUM;
         my $p = $ctx->getpriv();
-        $p->{header} .= $data;
+        $p->{header} .= "$name: $value\n";
         $ctx->setpriv($p);
         return cont();
     },

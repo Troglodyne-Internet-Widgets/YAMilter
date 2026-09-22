@@ -7,6 +7,7 @@ use Exporter 'import';
 our @EXPORT_OK = qw{fork_and_term getsock getconfig writeconfig};
 
 use Milter::Client qw{:constants};
+use Milter::Harness;
 use File::Temp;
 use Config::Simple;
 use IO::Socket::UNIX;
@@ -20,7 +21,9 @@ our @gibbering = (
     [SMFIC_MAIL,    '<test@test.test>'],
     [SMFIC_RCPT,    '<test@test.test>'],
     [SMFIC_DATA,    ],
-    [SMFIC_HEADER,  "From: test\@test.test\nTo: test\@test.test\nSubject: Test\n\n"],
+    [SMFIC_HEADER,  'From',    'test@test.test'],
+    [SMFIC_HEADER,  'To',      'test@test.test'],
+    [SMFIC_HEADER,  'Subject', 'Test'],
     [SMFIC_EOH,     ],
     [SMFIC_BODY,    "Testing 123"],
     [SMFIC_BODYEOB, ],
@@ -32,12 +35,16 @@ sub gibs {
 }
 
 my $c_actual;
+
+# Test2 seeds srand from the date, so parallel tests draw the same tmpnam() names; mkdir at least fails and retries on collision.
+my $dir;
 sub getconfig {
     return $c_actual if $c_actual;
 
-    my $cfg_file = File::Temp::tmpnam();
-    my $sock     = File::Temp::tmpnam();
-    my $pid      = File::Temp::tmpnam();
+    $dir = File::Temp->newdir();
+    my $cfg_file = "$dir/yamilter.cfg";
+    my $sock     = "$dir/yamilter.sock";
+    my $pid      = "$dir/yamilter.pid";
 
     my $ncf = Config::Simple->new( syntax => 'ini' );
     $ncf->param('service.sock',    $sock);
@@ -66,49 +73,18 @@ sub getsock {
     ) || die "Couldn't connect to $sockfile: $@";
 }
 
+# Run the milter in a child for the duration of $callback, then return what it printed.
 sub fork_and_term {
-    my ($callback, @args) = @_;
-    open(my $output, '+<', undef);
-    $output->autoflush(1);
-    select $output;
-    my $pid = fork();
-    die "Could not fork" unless defined $pid;
-    if (!$pid) {
-        $output->autoflush(1);
-        select $output;
-        my $script = shift @args;
-        print "Running $script\n";
-        local @ARGV = @args;
-        do $script;
-        exit YAMilter::main(@args);
-    }
-    select STDOUT;
-    sleep 1;
+    my ($callback, $script, %args) = @_;
+    my $milter = Milter::Harness->new( script => $script, config => $args{'--config'} );
+    $milter->start();
     if ($callback) {
         local $@;
         eval { $callback->() } or do {
             print "$@\n";
         }
     }
-    kill 'TERM', $pid;
-    my $exited = 0;
-    foreach (1..10) {
-        my $res = waitpid($pid, 1);
-        if ($res !=0) {
-            $exited=1;
-            last;
-        }
-        sleep 1;
-    }
-    if (!$exited) {
-        kill('KILL', $pid);
-        waitpid($pid, 0);
-    }
-    seek($output, 0, 0);
-    my $o = join("\n", (readline $output));
-    close $output;
-    return $o;
+    return $milter->stop();
 }
-
 
 1;
