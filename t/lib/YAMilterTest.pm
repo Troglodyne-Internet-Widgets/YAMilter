@@ -8,42 +8,18 @@ use re '/aa';
 use FindBin::libs;
 
 use Exporter 'import';
-our @EXPORT_OK   = qw{fork_and_term getsock getconfig writeconfig gibs};
+our @EXPORT_OK   = qw{fork_and_term getconfig};
 our %EXPORT_TAGS = ( all => \@EXPORT_OK );
 
-use Milter::Client qw{:constants};
 use Milter::Harness;
 use File::Temp;
 use Config::Simple;
-use IO::Socket::UNIX;
 
 =head1 DESCRIPTION
 
-Helpers for the tests which run yamilter: a configuration in a temporary directory, a canned milter conversation, and a wrapper around L<Milter::Harness>.
+Helpers for the test which runs yamilter from its script: a configuration in a temporary directory, and a wrapper around L<Milter::Harness>.
 
 =cut
-
-# Mock up a session for us to use.
-# Unfortunately for us we can't just use SMTP commands and instead have to freebase C structs
-our @gibbering = (
-    [ SMFIC_OPTNEG,  6, hex(0x1F), hex(0x1FFFFF) ],
-    [ SMFIC_CONNECT, 'test.test', SMFIA_UNIX, 0, getconfig()->param('service.sock') ],
-    [ SMFIC_HELO,    'test.test' ],
-    [ SMFIC_MAIL,    '<test@test.test>' ],
-    [ SMFIC_RCPT,    '<test@test.test>' ],
-    [ SMFIC_DATA, ],
-    [ SMFIC_HEADER, 'From',    'test@test.test' ],
-    [ SMFIC_HEADER, 'To',      'test@test.test' ],
-    [ SMFIC_HEADER, 'Subject', 'Test' ],
-    [ SMFIC_EOH, ],
-    [ SMFIC_BODY, "Testing 123" ],
-    [ SMFIC_BODYEOB, ],
-    [ SMFIC_QUIT, ],
-);
-
-sub gibs {
-    return @gibbering;
-}
 
 my $c_actual;
 
@@ -70,20 +46,6 @@ sub getconfig {
 
     $c_actual = $ncf;
     return $ncf;
-}
-
-sub writeconfig {
-    my $c = getconfig();
-    $c->write( $c->param('service.f') );
-}
-
-sub getsock {
-    my $sockfile = getconfig()->param('service.sock');
-
-    return IO::Socket::UNIX->new(
-        Type => SOCK_STREAM(),
-        Peer => $sockfile,
-    ) || die "Couldn't connect to $sockfile: $@";
 }
 
 # Run the milter in a child for the duration of $callback, then return what it printed.

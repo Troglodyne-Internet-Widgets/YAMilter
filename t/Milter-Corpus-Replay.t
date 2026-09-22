@@ -41,7 +41,8 @@ $corpus->index_source( $fx->{source} );
 subtest 'run' => sub {
     like( dies { Milter::Corpus::Replay->new( corpus => $corpus, script => $yamilter, config => '/bogus' ) }, qr/Could not read configuration file \/bogus: /, 'missing configuration dies' );
 
-    my $cfg    = write_file( "$tmp/lang.cfg", "[Language]\nlangs=en\naction=defer\n" );
+    # min_words=10 here and below, as the fixture mail is shorter than Language judges by default
+    my $cfg    = write_file( "$tmp/lang.cfg", "[Language]\nlangs=en\naction=defer\nmin_words=10\n" );
     my $replay = Milter::Corpus::Replay->new( corpus => $corpus, script => $yamilter, config => $cfg );
     my ($run)  = $replay->run( label => 'english', jobs => 2, timeout => 5 );
 
@@ -62,13 +63,13 @@ subtest 'run' => sub {
 
     ( undef, $rows ) = $corpus->query( 'SELECT label, config, recipes, finished IS NOT NULL, milter_log FROM runs WHERE id = ?', $run );
     my ( $label, $config, $recipes, $finished, $log ) = @{ $rows->[0] };
-    is( $label,  'english',                              'labelled' );
-    is( $config, "[Language]\naction=defer\nlangs=en\n", 'the recipe configuration is kept, without the service section' );
+    is( $label,  'english',                                            'labelled' );
+    is( $config, "[Language]\naction=defer\nlangs=en\nmin_words=10\n", 'the recipe configuration is kept, without the service section' );
     like( $recipes, qr/^\{"Language":"[0-9a-f]{64}"\}\z/, 'with a hash of the recipe source' );
     ok( $finished, 'marked finished' );
     like( $log, qr/Loaded milter modules: Language/, 'with what the milter printed' );
 
-    my ($de) = Milter::Corpus::Replay->new( corpus => $corpus, script => $yamilter, config => write_file( "$tmp/de.cfg", "[Language]\nlangs=de\naction=defer\n" ) )->run( folder => '.', timeout => 5 );
+    my ($de) = Milter::Corpus::Replay->new( corpus => $corpus, script => $yamilter, config => write_file( "$tmp/de.cfg", "[Language]\nlangs=de\naction=defer\nmin_words=10\n" ) )->run( folder => '.', timeout => 5 );
     ( undef, $rows ) = $corpus->query( 'SELECT COUNT(*) FROM results WHERE run_id = ?', $de );
     is( $rows->[0][0], 2, 'folder filter limits the replay' );
 
@@ -91,7 +92,7 @@ subtest 'each' => sub {
     write_file( "$lib/Langtoo.pm", $code );
     local @INC = ( "$tmp/lib", @INC );
 
-    my $cfg  = write_file( "$tmp/each.cfg", "[service]\norder=Langtoo, Language\n[Language]\nlangs=en\naction=defer\n[Langtoo]\nlangs=de\naction=reject\n" );
+    my $cfg  = write_file( "$tmp/each.cfg", "[service]\norder=Langtoo, Language\n[Language]\nlangs=en\naction=defer\nmin_words=10\n[Langtoo]\nlangs=de\naction=reject\nmin_words=10\n" );
     my @runs = Milter::Corpus::Replay->new( corpus => $corpus, script => $yamilter, config => $cfg )->run( label => 'each', each => 1, folder => '.', timeout => 5 );
     is( scalar(@runs), 2, 'one run per recipe, each keeping only its own part of service.order' );
 
@@ -99,7 +100,7 @@ subtest 'each' => sub {
     is( $rows, [ [ $runs[0] ] ], 'in one batch' );
 
     ( undef, $rows ) = $corpus->query( 'SELECT label, config FROM runs WHERE id IN (?, ?) ORDER BY id', @runs );
-    is( $rows, [ [ 'each Langtoo', "[Langtoo]\naction=reject\nlangs=de\n" ], [ 'each Language', "[Language]\naction=defer\nlangs=en\n" ] ], 'labelled by recipe, each with only its own section' );
+    is( $rows, [ [ 'each Langtoo', "[Langtoo]\naction=reject\nlangs=de\nmin_words=10\n" ], [ 'each Language', "[Language]\naction=defer\nlangs=en\nmin_words=10\n" ] ], 'labelled by recipe, each with only its own section' );
 
     my ( $cols, $summary ) = $corpus->report('summary');
     my ($blocked) = grep { $_->[0] eq 'batch' && $_->[2] eq 'blocked' } @$summary;

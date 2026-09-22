@@ -24,6 +24,7 @@ Revision history for Milter-Recipe
     - Add action=tag, which accepts mail with a header saying why (service.tag_header) instead of refusing it
     - Add Milter::Recipe::ColdCall, Milter::Contacts and yamilter-contacts: tag mail from strangers which reads like a sales pitch, learning correspondents from outbound mail
     - Add Milter::Recipe->message_texts, the decoded text parts of the accumulated message
+    - Milter::Recipe::Language judges the decoded text the sender wrote, once per message, skipping automated and short mail, and only when confident (min_words, confidence); it refused a third of the good mail in a real corpus before
 
 1.000 2026-06-29 TEODESIAN
     - First release to CPAN

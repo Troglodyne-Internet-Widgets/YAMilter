@@ -38,7 +38,8 @@ like( $err, qr/6 files, 6 read, 5 new messages/, '... and its progress' );
 
 like( dies { cli( 'report', '--db', $db ) }, qr/No runs to report on/, 'report before any run dies' );
 
-my $cfg = write_file( "$fx->{tmp}/lang.cfg", "[Language]\nlangs=en\naction=defer\n" );
+# min_words=10, as the fixture mail is shorter than Language judges by default
+my $cfg = write_file( "$fx->{tmp}/lang.cfg", "[Language]\nlangs=en\naction=defer\nmin_words=10\n" );
 ( $exit, $out ) = cli( 'run', '--db', $db, '--config', $cfg, '--yamilter', "$fx->{run_dir}/bin/yamilter", '--timeout', 5 );
 is( $exit, 0, 'run exits 0' );
 like( $out, qr/^Recorded run\(s\): 1$/m, 'run names the run it recorded' );
