@@ -128,14 +128,9 @@ sub eoh {
     return __PACKAGE__->cont();
 }
 
-# This recipe's part of the connection's private data, replaced when given a new one
 sub _state {
-    my ( $ctx, $new ) = @_;
-    my $priv = $ctx->getpriv() // {};
-    $priv->{ +__PACKAGE__ } = $new if $new;
-    $priv->{ +__PACKAGE__ } //= { sender => '', recipients => [], from => [], to => [] };
-    $ctx->setpriv($priv);
-    return $priv->{ +__PACKAGE__ };
+    my ( $ctx, $fresh ) = @_;
+    return __PACKAGE__->stash( $ctx, $fresh ) // __PACKAGE__->stash( $ctx, { sender => '', recipients => [], from => [], to => [] } );
 }
 
 # MAIL FROM and RCPT TO arguments are <address>, or <> for the null sender

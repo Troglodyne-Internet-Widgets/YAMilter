@@ -36,6 +36,7 @@ Most of the functionality therein is better covered by other software such as op
     sock=/var/run/yamilter.sock
     workers=10
     debug=0
+    order=MailingList, EnvelopeMatch
     [Language]
     langs=en, fr, es
     action=discard
@@ -52,7 +53,11 @@ Included in the F<service/> directory is a systemd service configuration you can
 It is written to refer to F</etc/yamilter.cfg> as the config file.
 
 The C<service> section above allows configuration of where the PID/Socket files live, and how many workers to run.
-The values above are the defaults if you omit these parameters.
+The values above, apart from C<order>, are the defaults if you omit these parameters.
+
+C<order> sets the order recipes run in, which matters when one can accept a message outright (see L<Milter::Recipe::MailingList>),
+since that ends milter processing for the message.
+Recipes it does not name run after those it does, alphabetically; by default that is all of them.
 
 You'll likely want to configure chrooted dovecot to have the sock inside its chroot.
 
@@ -79,6 +84,15 @@ and considered sufficient example for other authors to do the same.
 
 Reject mails which are not comprehensible to your userbase.
 
+=item L<Milter::Recipe::EnvelopeMatch>
+
+Reject mails whose From: is not the envelope sender, or which are not addressed To: or Cc: the envelope recipient.
+
+=item L<Milter::Recipe::MailingList>
+
+Reject list and bulk mail with malformed list headers, or missing the ones you require, or with an unsubscribe link but no List-Unsubscribe header;
+and accept mail from lists you trust outright, when your MX's DKIM check vouches for them.
+
 =back
 
 Writing them should be made significantly easier thanks to being able to test with L<Milter::Client>,
@@ -101,15 +115,10 @@ Based on the spam I currently receive, implementing these below (and the above) 
 
 I suspect most of this has prior art elsewhere, as if I could come up with this in an afternoon I'm sure for-pay MXes figured these out years ago.
 
-=head2 MatchingFrom
-
-Reject mails which have a differing envelope sender and 'From' Header.
-
-A common oversight by spammers, especially when they are sending spoofed email from a rooted box.
-
 =head2 RejectUnsolicitedMailingLists
 
-Spammers now frequently include a Mailing list unsubscribe header, because google looks for it specifically.
+L<Milter::Recipe::MailingList> refuses list mail which gets its headers wrong, and unsubscribe links without a List-Unsubscribe header.
+What it does not do yet is ask the list.
 
 Normally, mailing list software has a mechanism to verify that a user has in fact signed up for this list.
 
@@ -117,7 +126,7 @@ Spammers do not get in the habit of hosting services which might respond in the 
 
 As such, checking for this much like sender verification connections is valuable.
 
-It is also of value to reject mails without an unsubscribe header, but some variation of "to stop receiving such communications reply, or click etc".
+MailingList only counts unsubscribe links; mails asking you to reply with "unsubscribe" to stop receiving them get past it.
 
 =head2 419Detect
 
@@ -198,6 +207,15 @@ sub new {
         $obj{$recipe} = $config->get_block($recipe);
     }
 
+    # Recipes named in service.order run first, in that order; the rest follow alphabetically
+    my @order      = $class->config_list( $config->param('service.order') );
+    my %configured = map { $_ => 1 } @blocks;
+    foreach my $recipe (@order) {
+        die "service.order names $recipe, which has no section of its own in $cfile\n" unless $configured{$recipe};
+    }
+    my %ordered = map { $_ => 1 } @order;
+    $obj{recipes} = [ @order, sort grep { !$ordered{$_} } @blocks ];
+
     $singleton = bless( \%obj, $class );
     return $singleton;
 }
@@ -218,7 +236,7 @@ sub debug   { $_[0]->{debug} }
 
 =head2 $class->config()
 
-Retrieve the config section relevant to the current class, as a hashref, with the service's C<debug> setting added.
+Retrieve the config section relevant to the current class, as a hashref, with the service's C<debug> and C<no_accum> settings added.
 
 If your Recipe requires configuration, this is the method to call.
 It is a lookup on the singleton, so calling it from every callback costs nothing to speak of.
@@ -231,7 +249,8 @@ sub config {
     my ($recipe) = $class =~ m/::(\w+)$/;
     my $self     = $class->new();
     my $section  = $self->{$recipe} //= {};
-    $section->{debug} = $self->debug();
+    $section->{debug}    = $self->debug();
+    $section->{no_accum} = $self->{no_accum};
     return $section;
 }
 
@@ -293,6 +312,35 @@ sub config_code {
     return @$code;
 }
 
+=head2 @values = $class->config_list($value)
+
+A configuration value as a list: L<Config::Simple> hands back a comma separated value as an arrayref, and a single one as a string.
+Values are trimmed, and empty ones dropped.  An undefined value is an empty list.
+
+=cut
+
+sub config_list {
+    my ( $class, $value ) = @_;
+    return () unless defined $value;
+    return grep { length } map { s/\A\s+|\s+\z//gr } ( ref $value ? @$value : split( qr/,/, $value ) );
+}
+
+=head2 $state = $class->stash($ctx, [\%fresh])
+
+The recipe's own part of the connection's private data, kept under its package name so recipes do not trample each other.
+Given C<\%fresh>, replaces it first, which recipes do at MAIL FROM so nothing carries over from an earlier message on the connection.
+Returns undef if nothing was ever stashed.
+
+=cut
+
+sub stash {
+    my ( $class, $ctx, $fresh ) = @_;
+    my $priv = $ctx->getpriv() // {};
+    $priv->{$class} = $fresh if $fresh;
+    $ctx->setpriv($priv);
+    return $priv->{$class};
+}
+
 =head2 $class->config_reply($ctx, $message)
 
 Take the configured action, with C<$message> as the SMTP reply when the action has one (reject and tempfail).
@@ -324,14 +372,14 @@ Sets up some default milter callbacks that generally do the right thing:
 =over 4
 
 =item 1)
-Continue until EOM, then accept.  It is presumed any milter callbacks you configure do what they need to do before this point.
+Continue until EOM, then accept.  The recipes' own end of message callbacks run before this one, so they can still decide.
 
 =item 2)
 On Connect() we setpriv an empty hashref that you can store connection specific state within to support functionality requiring multiple callbacks.
 
 =item 3)
 On Header() and Body() we accumulate the header and body fragments into the 'header' and 'body' keys of said hashref, that you might consult them in EOH, EOB and EOM.
-Each header is accumulated as a C<"Name: value\n"> line.
+Each header is accumulated as a C<"Name: value\n"> line.  Both start afresh at each MAIL FROM, since a connection can carry several messages.
 
 =back
 
@@ -397,8 +445,16 @@ my %cb = (
         $ctx->setpriv( {} );
         return cont();
     },
-    helo    => \&cont,
-    envfrom => \&cont,
+    helo => \&cont,
+
+    # A connection can carry several messages; each starts at MAIL FROM
+    envfrom => sub {
+        my ($ctx) = @_;
+        my $p = $ctx->getpriv() // {};
+        delete @$p{qw{header body}};
+        $ctx->setpriv($p);
+        return cont();
+    },
     envrcpt => \&cont,
     header  => sub {
         my ( $ctx, $name, $value ) = @_;
@@ -433,8 +489,10 @@ sub cb {
     state %full_cb;
     return %full_cb if %full_cb;
 
+    # The default end of message accepts, so it goes after the recipes' rather than before them
     my %intermediate;
-    @intermediate{ keys(%cb) } = map { [ [ Default => $_ ] ] } values(%cb);
+    my @first = grep { $_ ne 'eom' } keys(%cb);
+    @intermediate{@first} = map { [ [ Default => $cb{$_} ] ] } @first;
 
     no strict 'refs';
     foreach my $lm ( $self->loaded_recipes() ) {
@@ -446,6 +504,7 @@ sub cb {
         }
     }
     use strict 'refs';
+    push( @{ $intermediate{eom} }, [ Default => $cb{eom} ] );
 
     foreach my $callback ( keys(%intermediate) ) {
         $full_cb{$callback} = sub { _run_callbacks( $callback, \@_, @{ $intermediate{$callback} } ) }
@@ -487,11 +546,12 @@ sub _run_callbacks {
 
 =head2 loaded_recipes
 
-The package names of the recipes loaded from the configuration, sorted.
+The package names of the recipes loaded from the configuration, in the order they run (see C<order> in L</Service configuration>).
 
 =cut
 
 sub loaded_recipes {
+    return map       { "Milter::Recipe::$_" } @{ $singleton->{recipes} } if $singleton;
     return sort grep { m/^Milter::Recipe::/ } _inc2mod();
 }
 

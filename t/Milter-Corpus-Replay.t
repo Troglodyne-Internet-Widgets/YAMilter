@@ -86,9 +86,9 @@ subtest 'each' => sub {
     write_file( "$lib/Langtoo.pm", $code );
     local @INC = ( "$tmp/lib", @INC );
 
-    my $cfg  = write_file( "$tmp/each.cfg", "[Language]\nlangs=en\naction=defer\n[Langtoo]\nlangs=de\naction=reject\n" );
+    my $cfg  = write_file( "$tmp/each.cfg", "[service]\norder=Langtoo, Language\n[Language]\nlangs=en\naction=defer\n[Langtoo]\nlangs=de\naction=reject\n" );
     my @runs = Milter::Corpus::Replay->new( corpus => $corpus, script => $yamilter, config => $cfg )->run( label => 'each', each => 1, folder => '.', timeout => 5 );
-    is( scalar(@runs), 2, 'one run per recipe' );
+    is( scalar(@runs), 2, 'one run per recipe, each keeping only its own part of service.order' );
 
     my ( undef, $rows ) = $corpus->query( 'SELECT DISTINCT batch FROM runs WHERE id IN (?, ?)', @runs );
     is( $rows, [ [ $runs[0] ] ], 'in one batch' );
@@ -99,6 +99,21 @@ subtest 'each' => sub {
     my ( $cols, $summary ) = $corpus->report('summary');
     my ($blocked) = grep { $_->[0] eq 'batch' && $_->[2] eq 'blocked' } @$summary;
     is( $blocked->[3], 2, 'the batch blocks what either recipe blocked' );
+};
+
+subtest 'service.order' => sub {
+
+    # Alphabetically Rejects runs first; service.order puts Zaccepts first, and it accepts everything at end of header
+    my $lib = "$tmp/order/Milter/Recipe";
+    make_path($lib);
+    write_file( "$lib/Rejects.pm",  "package Milter::Recipe::Rejects;\nuse parent qw{Milter::Recipe};\nour %cb = ( eoh => sub { __PACKAGE__->config_reply( \$_[0], 'no' ) } );\n1;\n" );
+    write_file( "$lib/Zaccepts.pm", "package Milter::Recipe::Zaccepts;\nuse parent qw{Milter::Recipe};\nour %cb = ( eoh => sub { __PACKAGE__->accept() } );\n1;\n" );
+    local @INC = ( "$tmp/order", @INC );
+
+    my $cfg = write_file( "$tmp/order.cfg", "[service]\norder=Zaccepts\n[Rejects]\naction=reject\n[Zaccepts]\naction=reject\n" );
+    my ($run) = Milter::Corpus::Replay->new( corpus => $corpus, script => $yamilter, config => $cfg )->run( folder => '.', timeout => 5 );
+    my ( undef, $rows ) = $corpus->query( 'SELECT DISTINCT action FROM results WHERE run_id = ?', $run );
+    is( $rows, [ ['accept'] ], 'the replayed milter runs recipes in the configured order' );
 };
 
 done_testing();

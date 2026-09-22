@@ -18,6 +18,7 @@ use Time::HiRes qw{time};
 use Milter::Client qw{:constants};
 use Milter::Corpus qw{split_message};
 use Milter::Harness;
+use Milter::Recipe;
 
 =head1 SYNOPSIS
 
@@ -40,6 +41,7 @@ accept, reject, tempfail, discard, quarantine, timeout (the milter said nothing 
 Reaching the end of the message with nothing but CONTINUE counts as accept, as that is what an MTA would do.
 
 The configuration's C<service> section is replaced: the socket and pidfile go in a temporary directory, and C<workers> matches C<jobs>.
+Only C<order> is kept, less any recipe a run leaves out.
 
 =cut
 
@@ -149,12 +151,18 @@ sub _configs {
     my @recipes = sort grep { $_ ne 'service' } $cfg->get_block();
     die "No recipes configured in $self->{config}.  Note that a recipe section needs at least one key (e.g. action=reject) to be seen.\n" unless @recipes;
 
+    my @order = Milter::Recipe->config_list( $cfg->param('service.order') );
+
     my @groups = $each ? ( map { [$_] } @recipes ) : ( \@recipes );
     return map {
         my @group = @$_;
+        my %in    = map { $_ => 1 } @group;
         {
             recipes => \@group,
             text    => _ini( map { ( $_ => $cfg->get_block($_) ) } @group ),
+
+            # yamilter refuses an order naming a recipe it has no section for, which --each leaves out
+            order => join( ', ', grep { $in{$_} } @order ),
         }
     } @groups;
 }
@@ -200,6 +208,7 @@ sub _replay {
             sock    => "$dir/yamilter.sock",
             pidfile => "$dir/yamilter.pid",
             workers => $opts->{jobs},
+            ( length $cfg->{order} ? ( order => $cfg->{order} ) : () ),
         },
     );
     print $fh $cfg->{text};
