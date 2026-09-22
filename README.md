@@ -55,6 +55,8 @@ It is written to refer to `/etc/yamilter.cfg` as the config file.
 The `service` section above allows configuration of where the PID/Socket files live, and how many workers to run.
 The values above, apart from `order`, are the defaults if you omit these parameters.
 
+`tag_header` is the header recipes configured with `action=tag` add, one per tag, as `Recipe: reason`.  It defaults to `X-YAMilter`.
+
 `decision_log` names a file to append a line to for every decision a recipe makes (anything but continue):
 the time, the MTA's queue id (the `{i}` macro, which postfix sends), the recipe, the callback, and the result, separated by tabs.
 Off unless set.  `yamilter-corpus` uses it to record which recipe decided each message.
@@ -70,10 +72,11 @@ You'll likely want to configure chrooted dovecot to have the sock inside its chr
 Each recipe will accept an `action` parameter.
 By default, each recipe MUST reject, but if the action is set, do that instead.
 
-The only meaningful actions to take other than reject are discard or tempfail.
+The only meaningful actions to take other than reject are discard, tempfail, or tag.
 Maybe you want to accept, but that is usually ill-advised.
 
-TODO: add a 'spam' action to add a spam header and accept.
+`tag` accepts the message but adds a header saying why (see `tag_header`), for sieve or the like to act on.
+It is the gentle choice for a recipe you are not sure of yet.
 
 All other recipe configuration is up to the recipe itself and you should refer to their documentation.
 
@@ -94,6 +97,11 @@ and considered sufficient example for other authors to do the same.
 
     Reject list and bulk mail with malformed list headers, or missing the ones you require, or with an unsubscribe link but no List-Unsubscribe header;
     and accept mail from lists you trust outright, when your MX's DKIM check vouches for them.
+
+- [Milter::Recipe::ColdCall](https://metacpan.org/pod/Milter%3A%3ARecipe%3A%3AColdCall)
+
+    Tag sales cold calls: mail from strangers (nobody here has written to them) which reads like a pitch.
+    Learns who your correspondents are from the mail your users send.
 
 Writing them should be made significantly easier thanks to being able to test with [Milter::Client](https://metacpan.org/pod/Milter%3A%3AClient),
 and [Milter::Harness](https://metacpan.org/pod/Milter%3A%3AHarness), which runs the milter for the duration of a test.
@@ -214,9 +222,17 @@ The recipe's own part of the connection's private data, kept under its package n
 Given `\%fresh`, replaces it first, which recipes do at MAIL FROM so nothing carries over from an earlier message on the connection.
 Returns undef if nothing was ever stashed.
 
+## @texts = $class->message\_texts($header, $body)
+
+The text parts of a message, given its header and body as the default callbacks accumulate them,
+each as `[ $decoded_text, $is_html ]`.  MIME parts, quoted-printable and base64 are decoded.
+Mail too broken to take apart is returned as it came, as one text.
+
 ## $class->config\_reply($ctx, $message)
 
 Take the configured action, with `$message` as the SMTP reply when the action has one (reject and tempfail).
+With `action=tag`, the message is accepted instead, with `$message` added as a header (see `tag_header` in ["Service configuration"](#service-configuration)),
+and carries on through the other recipes.
 Returns the action, so a callback which has made up its mind can end with:
 
 ```

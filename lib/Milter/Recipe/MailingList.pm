@@ -10,7 +10,6 @@ use re '/aa';
 use parent qw{Milter::Recipe};
 
 use List::Util qw{any max min};
-use Mail::Message;
 
 =head1 DESCRIPTION
 
@@ -337,27 +336,7 @@ Whether any text part of a message (given as its header and body) has an unsubsc
 
 sub body_has_unsubscribe_link {
     my ( $header, $body ) = @_;
-    my $raw = "$header\n$body";
-    $raw =~ s/\r\n/\n/g;
-
-    my @texts;
-    my $ok = eval {
-        my $message = Mail::Message->read( \$raw, log => 'NONE', trace => 'NONE' );
-        foreach my $part ( $message->parts('RECURSE') ) {
-            next if $part->isMultipart;
-            my $type = lc $part->contentType;
-            next unless $type eq 'text/plain' || $type eq 'text/html';
-            push @texts, [ $part->decoded->string, $type eq 'text/html' ];
-        }
-        1;
-    };
-
-    # Mail too broken to take apart is looked at as it came
-    if ( !$ok || !@texts ) {
-        my ($raw_body) = $raw =~ m/\n\n(.*)\z/s;
-        @texts = ( [ $raw_body // '', ( $raw_body // '' ) =~ m/<a\b/i ] );
-    }
-    return any { unsubscribe_link(@$_) } @texts;
+    return any { unsubscribe_link(@$_) } __PACKAGE__->message_texts( $header, $body );
 }
 
 =head2 unsubscribe_link($text, $is_html)

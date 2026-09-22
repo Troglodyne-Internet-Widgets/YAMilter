@@ -94,7 +94,7 @@ Messages per verdict, and per action in each run.
 
 =item C<header_rates>
 
-For each header name, how many messages of each verdict have it (C<accept>, C<blocked>, C<error>), and what percentage of that verdict's messages that is (C<pct_accept> and so forth).
+For each header name, how many messages of each verdict have it (C<accept>, C<blocked>, C<tagged>, C<error>), and what percentage of that verdict's messages that is (C<pct_accept> and so forth).
 
 =item C<header_values>, C<sender_domains>, C<helo_names>, C<client_ips>, C<folder_verdicts>, C<reply_counts>
 
@@ -206,7 +206,8 @@ my %VIEWS = (
     verdicts => q{
         SELECT 'batch' AS scope, u.batch AS scope_id, r.message_id,
                CASE WHEN SUM(r.action IN ('reject', 'tempfail', 'discard', 'quarantine')) > 0 THEN 'blocked'
-                    WHEN SUM(r.action != 'accept') > 0 THEN 'error'
+                    WHEN SUM(r.action NOT IN ('accept', 'tag')) > 0 THEN 'error'
+                    WHEN SUM(r.action = 'tag') > 0 THEN 'tagged'
                     ELSE 'accept' END AS verdict
         FROM results r JOIN runs u ON u.id = r.run_id
         WHERE r.message_id NOT IN (SELECT message_id FROM ignored_messages)
@@ -214,6 +215,7 @@ my %VIEWS = (
         UNION ALL
         SELECT 'run', r.run_id, r.message_id,
                CASE WHEN r.action IN ('reject', 'tempfail', 'discard', 'quarantine') THEN 'blocked'
+                    WHEN r.action = 'tag' THEN 'tagged'
                     WHEN r.action != 'accept' THEN 'error'
                     ELSE 'accept' END
         FROM results r
@@ -247,6 +249,7 @@ my %VIEWS = (
         SELECT v.scope, v.scope_id, l.folder, COUNT(DISTINCT v.message_id) AS messages,
                COUNT(DISTINCT CASE WHEN v.verdict = 'accept'  THEN v.message_id END) AS accepted,
                COUNT(DISTINCT CASE WHEN v.verdict = 'blocked' THEN v.message_id END) AS blocked,
+               COUNT(DISTINCT CASE WHEN v.verdict = 'tagged'  THEN v.message_id END) AS tagged,
                COUNT(DISTINCT CASE WHEN v.verdict = 'error'   THEN v.message_id END) AS errors
         FROM verdicts v JOIN locations l ON l.message_id = v.message_id
         GROUP BY v.scope, v.scope_id, l.folder
@@ -257,11 +260,12 @@ my %VIEWS = (
         WITH hv AS (SELECT DISTINCT v.scope, v.scope_id, v.verdict, v.message_id, h.name FROM verdicts v JOIN headers h ON h.message_id = v.message_id),
              counts AS (
                 SELECT scope, scope_id, name,
-                       SUM(verdict = 'accept') AS accept, SUM(verdict = 'blocked') AS blocked, SUM(verdict = 'error') AS error
+                       SUM(verdict = 'accept') AS accept, SUM(verdict = 'blocked') AS blocked, SUM(verdict = 'tagged') AS tagged, SUM(verdict = 'error') AS error
                 FROM hv GROUP BY scope, scope_id, name)
-        SELECT c.scope, c.scope_id, c.name, c.accept, c.blocked, c.error,
+        SELECT c.scope, c.scope_id, c.name, c.accept, c.blocked, c.tagged, c.error,
                ROUND(100.0 * c.accept  / MAX(1, (SELECT messages FROM verdict_counts t WHERE t.scope = c.scope AND t.scope_id = c.scope_id AND t.verdict = 'accept')), 1)  AS pct_accept,
                ROUND(100.0 * c.blocked / MAX(1, (SELECT messages FROM verdict_counts t WHERE t.scope = c.scope AND t.scope_id = c.scope_id AND t.verdict = 'blocked')), 1) AS pct_blocked,
+               ROUND(100.0 * c.tagged  / MAX(1, (SELECT messages FROM verdict_counts t WHERE t.scope = c.scope AND t.scope_id = c.scope_id AND t.verdict = 'tagged')), 1)  AS pct_tagged,
                ROUND(100.0 * c.error   / MAX(1, (SELECT messages FROM verdict_counts t WHERE t.scope = c.scope AND t.scope_id = c.scope_id AND t.verdict = 'error')), 1)   AS pct_error
         FROM counts c
     },
@@ -874,7 +878,7 @@ sub finish_run {
 
 # Each report is a view, the columns shown from it, and whether it is filtered by verdict
 my %REPORTS = (
-    folders => { view => 'folder_verdicts', columns => [qw{folder messages accepted blocked errors}] },
+    folders => { view => 'folder_verdicts', columns => [qw{folder messages accepted blocked tagged errors}] },
     values  => { view => 'header_values',   columns => [qw{value messages}],                 verdict => 1 },
     senders => { view => 'sender_domains',  columns => [qw{domain messages}],                verdict => 1 },
     helo    => { view => 'helo_names',      columns => [qw{helo messages}],                  verdict => 1 },
@@ -882,7 +886,7 @@ my %REPORTS = (
     replies => { view => 'reply_counts',    columns => [qw{recipe action reply messages}] },
     list    => { view => 'verdict_list',    columns => [ qw{id folder}, '"from"', 'subject' ], verdict => 1, order => 'id' },
 );
-my %VERDICTS = ( accept => 'accepted', blocked => 'blocked', error => 'errors' );
+my %VERDICTS = ( accept => 'accepted', blocked => 'blocked', tagged => 'tagged', error => 'errors' );
 
 =head1 REPORTS
 
@@ -1031,7 +1035,7 @@ sub describe {
 
     my @lines = (
         ucfirst($scope) . " $scope_id: " . $runs->(@ids),
-        ucfirst($left_out) . "; of the $total others, " . join( ', ', map { ( $count{$_} // 0 ) . " $VERDICTS{$_}" } qw{accept blocked error} ),
+        ucfirst($left_out) . "; of the $total others, " . join( ', ', map { ( $count{$_} // 0 ) . " $VERDICTS{$_}" } qw{accept blocked tagged error} ),
     );
     push @lines, "Showing the $VERDICTS{ $opts{verdict} || 'accept' } mail" if $name eq 'headers' || ( $REPORTS{$name} && $REPORTS{$name}{verdict} );
     return @lines;

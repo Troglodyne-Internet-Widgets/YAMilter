@@ -131,7 +131,7 @@ subtest 'reports' => sub {
 
     ( $cols, $rows ) = $corpus->report('folders');
     my ($trash) = grep { $_->[0] eq 'Trash' } @$rows;
-    is( $trash, [ 'Trash', 2, 1, 0, 1 ], 'folders report' );
+    is( $trash, [ 'Trash', 2, 1, 0, 0, 1 ], 'folders report' );
 
     ( $cols, $rows ) = $corpus->report( 'senders', verdict => 'blocked' );
     is( [ map { $_->[0] } @$rows ], ['test.test'], 'senders by domain' );
@@ -146,7 +146,7 @@ subtest 'reports' => sub {
 
     is(
         [ $corpus->describe( 'headers', batch => $first ) ],
-        [ qq{Batch $first: run $first "one" (); run $second "two" (Deals)}, 'No ignore rules; of the 5 others, 2 accepted, 2 blocked, 1 errors', 'Showing the accepted mail' ],
+        [ qq{Batch $first: run $first "one" (); run $second "two" (Deals)}, 'No ignore rules; of the 5 others, 2 accepted, 2 blocked, 0 tagged, 1 errors', 'Showing the accepted mail' ],
         'describe says which runs and recipes, what the verdicts were, and which the report shows'
     );
 

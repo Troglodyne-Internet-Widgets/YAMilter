@@ -8,6 +8,7 @@ use warnings FATAL => 'all';
 use re '/aa';
 
 use Config::Simple;
+use Mail::Message;
 use Sendmail::PMilter qw{:all};
 
 =head1 SYNOPSIS
@@ -55,6 +56,8 @@ It is written to refer to F</etc/yamilter.cfg> as the config file.
 The C<service> section above allows configuration of where the PID/Socket files live, and how many workers to run.
 The values above, apart from C<order>, are the defaults if you omit these parameters.
 
+C<tag_header> is the header recipes configured with C<action=tag> add, one per tag, as C<Recipe: reason>.  It defaults to C<X-YAMilter>.
+
 C<decision_log> names a file to append a line to for every decision a recipe makes (anything but continue):
 the time, the MTA's queue id (the C<{i}> macro, which postfix sends), the recipe, the callback, and the result, separated by tabs.
 Off unless set.  C<yamilter-corpus> uses it to record which recipe decided each message.
@@ -70,10 +73,11 @@ You'll likely want to configure chrooted dovecot to have the sock inside its chr
 Each recipe will accept an C<action> parameter.
 By default, each recipe MUST reject, but if the action is set, do that instead.
 
-The only meaningful actions to take other than reject are discard or tempfail.
+The only meaningful actions to take other than reject are discard, tempfail, or tag.
 Maybe you want to accept, but that is usually ill-advised.
 
-TODO: add a 'spam' action to add a spam header and accept.
+C<tag> accepts the message but adds a header saying why (see C<tag_header>), for sieve or the like to act on.
+It is the gentle choice for a recipe you are not sure of yet.
 
 All other recipe configuration is up to the recipe itself and you should refer to their documentation.
 
@@ -96,6 +100,11 @@ Reject mails whose From: is not the envelope sender, or which are not addressed 
 
 Reject list and bulk mail with malformed list headers, or missing the ones you require, or with an unsubscribe link but no List-Unsubscribe header;
 and accept mail from lists you trust outright, when your MX's DKIM check vouches for them.
+
+=item L<Milter::Recipe::ColdCall>
+
+Tag sales cold calls: mail from strangers (nobody here has written to them) which reads like a pitch.
+Learns who your correspondents are from the mail your users send.
 
 =back
 
@@ -174,6 +183,9 @@ Creates the Milter recipe singleton.  Subsequent calls simply return the same ob
 
 =cut
 
+# The callback being run, for config_reply to put in the decision log
+our $CALLBACK = '-';
+
 my $DEBUG    = 0;
 my $NO_ACCUM = 0;
 
@@ -199,6 +211,7 @@ sub new {
         no_accum => $config->param('service.no_accum') // 0,
 
         decision_log => scalar $config->param('service.decision_log'),
+        tag_header   => scalar( $config->param('service.tag_header') ) // 'X-YAMilter',
     );
 
     # Set things that callbacks need to be aware of
@@ -261,6 +274,7 @@ sub config {
 }
 
 my %action = (
+    tag      => SMFIS_CONTINUE,
     reject   => SMFIS_REJECT,
     discard  => SMFIS_DISCARD,
     tempfail => SMFIS_TEMPFAIL,
@@ -347,9 +361,42 @@ sub stash {
     return $priv->{$class};
 }
 
+=head2 @texts = $class->message_texts($header, $body)
+
+The text parts of a message, given its header and body as the default callbacks accumulate them,
+each as C<[ $decoded_text, $is_html ]>.  MIME parts, quoted-printable and base64 are decoded.
+Mail too broken to take apart is returned as it came, as one text.
+
+=cut
+
+sub message_texts {
+    my ( $class, $header, $body ) = @_;
+    my $raw = ( $header // '' ) . "\n" . ( $body // '' );
+    $raw =~ s/\r\n/\n/g;
+
+    my @texts;
+    my $ok = eval {
+        my $message = Mail::Message->read( \$raw, log => 'NONE', trace => 'NONE' );
+        foreach my $part ( $message->parts('RECURSE') ) {
+            next if $part->isMultipart;
+            my $type = lc $part->contentType;
+            next unless $type eq 'text/plain' || $type eq 'text/html';
+            push @texts, [ $part->decoded->string, $type eq 'text/html' ];
+        }
+        1;
+    };
+    if ( !$ok || !@texts ) {
+        my ($raw_body) = $raw =~ m/\n\n(.*)\z/s;
+        @texts = ( [ $raw_body // '', ( $raw_body // '' ) =~ m/<a\b/i ] );
+    }
+    return @texts;
+}
+
 =head2 $class->config_reply($ctx, $message)
 
 Take the configured action, with C<$message> as the SMTP reply when the action has one (reject and tempfail).
+With C<action=tag>, the message is accepted instead, with C<$message> added as a header (see C<tag_header> in L</Service configuration>),
+and carries on through the other recipes.
 Returns the action, so a callback which has made up its mind can end with:
 
     return __PACKAGE__->config_reply( $ctx, "Your mail is not welcome here" );
@@ -358,6 +405,17 @@ Returns the action, so a callback which has made up its mind can end with:
 
 sub config_reply {
     my ( $class, $ctx, $message ) = @_;
+
+    # Tagging lets the message carry on through the other recipes; the default end of message adds the header
+    if ( ( $class->config()->{action} // '' ) eq 'tag' ) {
+        ( my $recipe = $class ) =~ s/\AMilter::Recipe:://;
+        my $p = $ctx->getpriv() // {};
+        push @{ $p->{tags} }, "$recipe: $message";
+        $ctx->setpriv($p);
+        _log_decision( $ctx, $class, $CALLBACK, 'TAG' );
+        return SMFIS_CONTINUE;
+    }
+
     my $action = $class->config_action();
 
     # setreply() only takes 4xx and 5xx replies, and discard has none at all
@@ -457,7 +515,7 @@ my %cb = (
     envfrom => sub {
         my ($ctx) = @_;
         my $p = $ctx->getpriv() // {};
-        delete @$p{qw{header body}};
+        delete @$p{qw{header body tags}};
         $ctx->setpriv($p);
         return cont();
     },
@@ -479,7 +537,12 @@ my %cb = (
         $ctx->setpriv($p);
         return cont();
     },
-    eom   => \&accept,
+    eom => sub {
+        my ($ctx) = @_;
+        my $p = $ctx->getpriv() // {};
+        $ctx->addheader( $singleton ? $singleton->{tag_header} : 'X-YAMilter', $_ ) for @{ $p->{tags} || [] };
+        return SMFIS_ACCEPT;
+    },
     abort => \&cont,
     close => \&cont,
 );
@@ -532,6 +595,7 @@ my %mr = (
 sub _run_callbacks {
     my $callback = shift;
     my $args     = shift;
+    local $CALLBACK = $callback;
     foreach my $cbo (@_) {
         my $module = $cbo->[0];
         my $cb     = $cbo->[1];

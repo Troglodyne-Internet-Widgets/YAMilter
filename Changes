@@ -21,6 +21,9 @@ Revision history for Milter-Recipe
     - yamilter-corpus records which recipe decided each message, and shows it in summary, replies, diff and show
     - Add yamilter-corpus ignore, to leave known mail out of every report
     - Reports say which runs and recipes they cover, and what the ignore rules left out; the headers report's columns say what they are shares of
+    - Add action=tag, which accepts mail with a header saying why (service.tag_header) instead of refusing it
+    - Add Milter::Recipe::ColdCall, Milter::Contacts and yamilter-contacts: tag mail from strangers which reads like a sales pitch, learning correspondents from outbound mail
+    - Add Milter::Recipe->message_texts, the decoded text parts of the accumulated message
 
 1.000 2026-06-29 TEODESIAN
     - First release to CPAN

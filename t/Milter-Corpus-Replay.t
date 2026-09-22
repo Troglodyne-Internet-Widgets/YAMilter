@@ -121,6 +121,22 @@ subtest 'service.order' => sub {
     is( $rows, [ ['accept'] ], 'the replayed milter runs recipes in the configured order' );
 };
 
+subtest 'tag' => sub {
+    my $lib = "$tmp/tags/Milter/Recipe";
+    make_path($lib);
+    write_file( "$lib/Tags.pm", "package Milter::Recipe::Tags;\nuse parent qw{Milter::Recipe};\nour %cb = ( eoh => sub { __PACKAGE__->config_reply( \$_[0], 'odd' ) } );\n1;\n" );
+    local @INC = ( "$tmp/tags", @INC );
+
+    # The configured tag_header is overridden, so tags can be picked out of the milter's modifications
+    my $cfg = write_file( "$tmp/tags.cfg", "[service]\ntag_header=X-Mine\n[Tags]\naction=tag\n" );
+    my ($run) = Milter::Corpus::Replay->new( corpus => $corpus, script => $yamilter, config => $cfg )->run( folder => '.', timeout => 5 );
+    my ( undef, $rows ) = $corpus->query( 'SELECT DISTINCT action, reply, recipe FROM results WHERE run_id = ?', $run );
+    is( $rows, [ [ 'tag', 'Tags: odd', 'Tags' ] ], 'a tagged message is recorded as a tag, with what the header said and the recipe' );
+
+    my ( $cols, $summary ) = $corpus->report( 'summary', run => $run );
+    is( [ map { [ @$_[ 2, 4 ] ] } grep { $_->[0] eq 'batch' } @$summary ], [ [ 'tagged', 2 ] ], 'and counted as tagged in the reports' );
+};
+
 done_testing();
 
 __END__

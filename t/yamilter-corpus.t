@@ -48,7 +48,7 @@ is( $exit,                                                              0,      
 is( [ map { ( split qr/\t/ )[3] } grep { length } split qr/\n/, $out ], [ 'subject', 'Ihre Bestellung' ], 'tsv output, header row first' );
 
 ( $exit, $out ) = cli( qw{report --db}, $db, 'summary' );
-like( $out, qr/^Batch 1: run 1 \(Language\)\nNo ignore rules; of the 5 others, 4 accepted, 1 blocked, 0 errors\n\n/, 'reports say what they are about' );
+like( $out, qr/^Batch 1: run 1 \(Language\)\nNo ignore rules; of the 5 others, 4 accepted, 1 blocked, 0 tagged, 0 errors\n\n/, 'reports say what they are about' );
 
 ( $exit, $out ) = cli( qw{ignore --db}, $db, qw{--folder Trash} );
 like( $out, qr/^1\s+Trash\s+2\s*$/m, 'ignore adds a rule and lists them' );
