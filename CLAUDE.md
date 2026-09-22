@@ -30,6 +30,7 @@ job is the defect, whichever is better.
 |---|---|
 | `perldoc Milter::Recipe` | what this is for, the configuration, and how a recipe is written; `README.md` is generated from it |
 | `perldoc Milter::Corpus` | the corpus database schema and its report views |
+| `perldoc Milter::Contacts` | the correspondents store the ColdCall recipe reads and learns into |
 | `perldoc bin/yamilter-corpus` | the replay tool's commands |
 | `.perlcriticrc` | the policies, which are the house style made enforceable |
 | `Changes` | what changed and when, per release |

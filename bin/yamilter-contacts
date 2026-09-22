@@ -1,0 +1,86 @@
+#!/usr/bin/env perl
+
+package YAMilter::Contacts;
+
+#ABSTRACT: Seed and inspect the contacts file which the ColdCall recipe reads
+
+use 5.014;
+use strict;
+use warnings FATAL => 'all';
+use re '/aa';
+
+use FindBin::libs;
+use Getopt::Long qw{GetOptionsFromArray};
+use Pod::Usage;
+
+use Milter::Contacts;
+
+=head1 USAGE
+
+    yamilter-contacts --contacts FILE seed FOLDER [FOLDER ...]
+    yamilter-contacts --contacts FILE list
+    yamilter-contacts --contacts FILE forget ADDRESS
+
+=head1 DESCRIPTION
+
+The contacts file holds everyone mail from this server has been sent to, and the Message-IDs of that mail.
+L<Milter::Recipe::ColdCall> reads it to tell correspondents from strangers, and adds to it as users send mail.
+
+=over 4
+
+=item C<seed>
+
+Learn from existing sent mail.  Each FOLDER is a Maildir directory (for Maildir++, the one for the sent folder, e.g. F<~/Maildir/.Sent>) or an mbox file.
+
+=item C<list>
+
+Print every contact, most recently written to first.
+
+=item C<forget>
+
+Stop treating an address as a contact.
+
+=back
+
+=cut
+
+sub main {
+    my @args = @_;
+    my %opts;
+    GetOptionsFromArray( \@args, \%opts, 'contacts=s', 'help' ) or return _pod2usage(2);
+    my $cmd = shift(@args) // '';
+    return _pod2usage(0) if $opts{help} || !$cmd || $cmd eq 'help';
+    die "--contacts is required\n" unless $opts{contacts};
+
+    my $contacts = Milter::Contacts->new( file => $opts{contacts} );
+    if ( $cmd eq 'seed' ) {
+        die "seed needs at least one folder\n" unless @args;
+        my $n = $contacts->seed(@args);
+        my ( undef, $rows ) = $contacts->list();
+        printf "Read %d messages; %d contacts known.\n", $n, scalar(@$rows);
+        return 0;
+    }
+    if ( $cmd eq 'list' ) {
+        my ( $cols, $rows ) = $contacts->list();
+        print join( "\t", @$cols ),               "\n";
+        print join( "\t", map { $_ // '' } @$_ ), "\n" for @$rows;
+        return 0;
+    }
+    if ( $cmd eq 'forget' ) {
+        die "forget needs an address\n"   unless @args;
+        die "$args[0] is not a contact\n" unless $contacts->forget( $args[0] );
+        return 0;
+    }
+    return _pod2usage( 2, "Unknown command '$cmd'" );
+}
+
+# Print the USAGE section of the POD, and return the exit code for main() to hand back
+sub _pod2usage {
+    my ( $exit, $msg ) = @_;
+    Pod::Usage::pod2usage( -exitval => 'NOEXIT', -verbose => 1, -input => __FILE__, -output => ( $exit ? \*STDERR : \*STDOUT ), ( $msg ? ( -message => $msg ) : () ) );
+    return $exit;
+}
+
+exit main(@ARGV) unless caller;
+
+1;

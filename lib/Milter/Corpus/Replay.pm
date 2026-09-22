@@ -38,11 +38,12 @@ one HEADER per header, EOH, the body in chunks (with bare LF turned into CRLF, a
 Each message gets a fresh connection.
 yamilter writes a decision_log for the run, which is how each result records the recipe which decided it.
 The first reply which is not CONTINUE is recorded as the verdict, mapped to one of these actions:
-accept, reject, tempfail, discard, quarantine, timeout (the milter said nothing in time) or error (the milter hung up, or the message could not be read).
+accept, reject, tempfail, discard, quarantine, tag (a recipe with C<action=tag> added its header; the reply is what the header said),
+timeout (the milter said nothing in time) or error (the milter hung up, or the message could not be read).
 Reaching the end of the message with nothing but CONTINUE counts as accept, as that is what an MTA would do.
 
 The configuration's C<service> section is replaced: the socket and pidfile go in a temporary directory, and C<workers> matches C<jobs>.
-Only C<order> is kept, less any recipe a run leaves out.
+Only C<order> is kept, less any recipe a run leaves out, and C<tag_header> is set so that tags can be picked out.
 
 =cut
 
@@ -51,6 +52,9 @@ my @OPTNEG = ( SMFIC_OPTNEG, 6, 0x1FF, 0x1FFFFF );
 
 # Replayed messages get this and their id as the MTA queue id ({i} macro), so the decision_log can be tied back to them
 my $QUEUE_ID_PREFIX = 'yamilter-corpus-';
+
+# The milter is told to tag with this header, whatever the configuration says, so the tags can be picked out
+my $TAG_HEADER = 'X-YAMilter';
 
 my %ACTION = (
     SMFIR_ACCEPT()   => 'accept',
@@ -213,6 +217,7 @@ sub _replay {
             pidfile      => "$dir/yamilter.pid",
             workers      => $opts->{jobs},
             decision_log => "$dir/decisions.log",
+            tag_header   => $TAG_HEADER,
             ( length $cfg->{order} ? ( order => $cfg->{order} ) : () ),
         },
     );
@@ -310,6 +315,13 @@ sub _replay_one {
 
     # A quarantined message is accepted by the MTA, but held rather than delivered
     $action = 'quarantine' if ( $action // '' ) eq 'accept' && grep { $_->[0] eq SMFIR_QUARANTINE } @$mods;
+
+    # Recipes with action=tag add our tag header rather than refusing; what it says is the reply
+    my @tags = map { ( split( qr/\0/, $_->[1] // '' ) )[1] // '' } grep { $_->[0] eq SMFIR_ADDHEADER && ( $_->[1] // '' ) =~ m/\A\Q$TAG_HEADER\E\0/ } @$mods;
+    if ( ( $action // '' ) eq 'accept' && @tags ) {
+        $action  = 'tag';
+        $payload = join( '; ', @tags );
+    }
 
     return {
         code          => $code,

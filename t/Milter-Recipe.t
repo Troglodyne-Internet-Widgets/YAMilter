@@ -65,7 +65,7 @@ subtest 'config' => sub {
 
 # Each yamilter run here gets its configuration and a set of one-callback recipes
 sub converse {
-    my ( $service, $recipes, @sections ) = @_;
+    my ( $service, $recipes, %action ) = @_;
     my $tmp = File::Temp->newdir();
     make_path("$tmp/lib/Milter/Recipe");
     foreach my $name ( sort keys %$recipes ) {
@@ -73,11 +73,11 @@ sub converse {
     }
     local @INC = ( "$tmp/lib", @INC );
 
-    my $cfg    = write_file( "$tmp/yamilter.cfg", "[service]\nsock=$tmp/yamilter.sock\npidfile=$tmp/yamilter.pid\nworkers=1\ndecision_log=$tmp/decisions.log\n$service" . join( '', map { "[$_]\naction=reject\n" } sort keys %$recipes ) );
+    my $cfg    = write_file( "$tmp/yamilter.cfg", "[service]\nsock=$tmp/yamilter.sock\npidfile=$tmp/yamilter.pid\nworkers=1\ndecision_log=$tmp/decisions.log\n$service" . join( '', map { "[$_]\naction=" . ( $action{$_} // 'reject' ) . "\n" } sort keys %$recipes ) );
     my $milter = Milter::Harness->new( script => "$FindBin::Bin/../bin/yamilter", config => $cfg );
     my $failed = eval { $milter->start(); 1 } ? undef : $@;
     return ( undef, undef, $failed ) if $failed;
-    my ( $code, $reply ) = Milter::Client::sendmail(
+    my ( $code, $reply, $mods ) = Milter::Client::sendmail(
         $milter->connect(),
         { timeout => 5 },
         [ SMFIC_OPTNEG, 6, 0x1FF, 0x1FFFFF ],
@@ -97,7 +97,7 @@ sub converse {
     if ( open( my $fh, '<', "$tmp/decisions.log" ) ) {
         @decisions = map { chomp; [ ( split qr/\t/ )[ 1 .. 4 ] ] } <$fh>;
     }
-    return ( $code, $reply, $out, \@decisions );
+    return ( $code, $reply, $out, \@decisions, $mods );
 }
 
 subtest 'order and end of message, in yamilter' => sub {
@@ -115,6 +115,13 @@ subtest 'order and end of message, in yamilter' => sub {
 
     ( $code, $reply, $log ) = converse( '', { AtTheEnd => 'eom => sub { __PACKAGE__->config_reply( $_[0], "not at the end either" ) }' } );
     is( [ $code, $reply ], [ SMFIR_REPLYCODE, '550 5.7.1 not at the end either' ], 'a recipe\'s end of message callback runs before the default accept' ) or diag($log);
+
+    my ( $tagged, $mods );
+    ( $code, $reply, $log ) = converse( '', { Tagger => 'eoh => sub { __PACKAGE__->config_reply( $_[0], "looks odd" ) }', Rejects => 'eom => sub { __PACKAGE__->config_reply( $_[0], "no" ) }' }, Tagger => 'tag', Rejects => 'reject' );
+    is( [ $code, $reply ], [ SMFIR_REPLYCODE, '550 5.7.1 no' ], 'a tag does not stop the next recipe refusing' ) or diag($log);
+    ( $code, $reply, $log, $tagged, $mods ) = converse( "tag_header=X-Test-Tag\n", { Tagger => 'eoh => sub { __PACKAGE__->config_reply( $_[0], "looks odd" ) }' }, Tagger => 'tag' );
+    is( [ $code, $mods ], [ SMFIR_ACCEPT, [ [ SMFIR_ADDHEADER, "X-Test-Tag\0Tagger: looks odd" ] ] ], 'a tag at end of header is added as a header at end of message, and the message accepted' ) or diag($log);
+    is( $tagged,          [ [qw{QUEUE1 Tagger eoh TAG}] ],                                            '... and the decision_log records it' );
 
     ( $code, $reply, $log ) = converse( "order=Nonesuch\n", \%recipes );
     like( $log, qr/service\.order names Nonesuch, which has no section of its own/, 'an order naming an unconfigured recipe stops yamilter starting' );
