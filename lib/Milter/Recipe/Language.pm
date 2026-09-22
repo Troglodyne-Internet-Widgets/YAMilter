@@ -64,8 +64,7 @@ sub body {
     warn "Body language of $lang detected" if $debug;
     if ( !any { $lang eq $_ } @allowed_langs ) {
         warn "Unrecognized language $lang detected, rejecting" if $debug;
-        $ctx->setreply( ( __PACKAGE__->config_code() ), "Language used in mail body is incomprehensible to our users" );
-        return __PACKAGE__->config_action();
+        return __PACKAGE__->config_reply( $ctx, "Language used in mail body is incomprehensible to our users" );
     }
 
     # Instructs Sendmail::Milter to do SMFIS_CONTINUE

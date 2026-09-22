@@ -9,6 +9,9 @@ use re '/aa';
 
 use parent qw{Milter::Recipe};
 
+use List::Util qw{any};
+use Mail::Address;
+
 =head1 DESCRIPTION
 
 It is necessary to ensure that the envelope sender and the From: header in emails match.
@@ -16,79 +19,131 @@ This is because people spamming from compromised boxes are rarely careful about 
 
 It is also valuable to check that the To: header contains the envelope recipient, as it is common practice by spammers to set the To: header to 'undisclosed recipients'.
 
+At the end of the header, the configured action is taken when either:
+
+=over 4
+
+=item *
+
+No address in the From: header is the envelope sender.
+
+=item *
+
+No envelope recipient is an address in the To: or Cc: headers.
+With several recipients, one is enough, since the others may have been Bcc'd.
+
+=back
+
+Addresses are compared whole and without regard to case.
+
+Mail with a null envelope sender (C<< MAIL FROM:<> >>) is not checked, since that is how bounces and other delivery notifications are sent,
+and their From: is whatever the reporting system calls itself.
+
+Expect this to catch legitimate mail too: mailing lists and bulk mail services send with an envelope sender of their own for bounces,
+and mailing list mail is addressed To: the list rather than to you.
+Try it on your own mail with C<yamilter-corpus> before deploying it.
+
+=head1 CONFIGURATION
+
+    [EnvelopeMatch]
+    action=reject
+
+Only C<action> is used.  See L<Milter::Recipe/Recipe configuration>.
+
 =head2 no_accum
 
-Setting no_accum is not supported by this plugin at this time.
-
-It should be possible to have full support for such, however.
-
-=head1 BUGS
-
-This recipe does not work yet: its callbacks are wired up wrongly and it dies at end of header.
-See L<https://github.com/Troglodyne-Internet-Widgets/YAMilter/issues/6>.
+This recipe keeps the addresses it needs as the headers arrive, so it works with C<no_accum> set.
 
 =head1 CALLBACKS
 
-=head2 store_envelope_sender($ctx, $address), store_envelope_recipient($ctx, $address)
+Each keeps what it learns in the connection's private data, under this package's name.
 
-Keep the envelope sender or recipient in the connection's private data.
+=head2 envfrom($ctx, $sender, @esmtp_args)
 
-=head2 store_envelope($type, $ctx, $address)
+Start a new transaction: keep the envelope sender, and forget everything about any earlier message on this connection.
 
-What the two above call, with C<$type> being C<sender> or C<recipient>.
+=head2 envrcpt($ctx, $recipient, @esmtp_args)
 
-=head2 check_header_vs_envelope($ctx)
+Keep an envelope recipient.
 
-At end of header, take the configured action if the From: header does not contain the envelope sender,
-or the To: header does not contain the envelope recipient.
+=head2 header($ctx, $name, $value)
+
+Keep the addresses in the From:, To: and Cc: headers.
+
+=head2 eoh($ctx)
+
+Compare the two, and take the configured action if they do not match as described above.
 
 =cut
 
 our %cb = (
-    envfrom => \&store_envelope,
-    envrcpt => \&store_envelope,
-    eoh     => \&check_header_vs_envelope,
+    envfrom => \&envfrom,
+    envrcpt => \&envrcpt,
+    header  => \&header,
+    eoh     => \&eoh,
 );
 
-my %envelope;
-
-sub store_envelope_sender    { store_envelope( 'sender',    @_ ) }
-sub store_envelope_recipient { store_envelope( 'recipient', @_ ) }
-
-sub store_envelope {
-    my ( $type, $ctx, $data ) = @_;
-
-    # Email validation is basically crazy.
-    my ($addr) = $data =~ m/<?(.+@[^>]+)>?/;
-
-    my $stash = $ctx->getpriv();
-    $stash->{$type} = $addr || '';
-    $ctx->setpriv($stash);
+sub envfrom {
+    my ( $ctx, $sender ) = @_;
+    _state( $ctx, { sender => _envelope_address($sender), recipients => [], from => [], to => [] } );
+    return __PACKAGE__->cont();
 }
 
-sub check_header_vs_envelope {
+sub envrcpt {
+    my ( $ctx, $recipient ) = @_;
+    push @{ _state($ctx)->{recipients} }, _envelope_address($recipient);
+    return __PACKAGE__->cont();
+}
+
+my %KEPT = (
+    from => 'from',
+    to   => 'to',
+    cc   => 'to',
+);
+
+sub header {
+    my ( $ctx, $name, $value ) = @_;
+    my $kept = $KEPT{ lc $name } or return __PACKAGE__->cont();
+    push @{ _state($ctx)->{$kept} }, map { lc $_->address } Mail::Address->parse($value);
+    return __PACKAGE__->cont();
+}
+
+sub eoh {
     my ($ctx) = @_;
+    my $state = _state($ctx);
+    my $debug = __PACKAGE__->config()->{debug};
 
-    my $stash = $ctx->gepriv();
-    my $conf  = __PACKAGE__->config();
-    my $debug = $conf->{debug};
+    return __PACKAGE__->cont() if $state->{sender} eq '';
 
-    # You can only have one from, but many to.
-    my ($fromline) = $stash->{header} =~ m/^From:/mg;
-    my ($toline)   = $stash->{header} =~ m/^To:/mg;
-
-    if ( $fromline !~ m/\Q$stash->{sender}\E/ ) {
+    if ( !any { $_ eq $state->{sender} } @{ $state->{from} } ) {
         warn "Envelope sender does not match header From, rejecting" if $debug;
-        $ctx->setreply( ( __PACKAGE__->config_code() ), "Envelope sender does not match From in header" );
-        return __PACKAGE__->config_action();
+        return __PACKAGE__->config_reply( $ctx, "Envelope sender does not match From in header" );
     }
 
-    if ( $toline !~ m/\Q$stash->{recipient}\E/ ) {
-        warn "Envelope recipient does not present within To:, rejecting" if $debug;
-        $ctx->setreply( ( __PACKAGE__->config_code() ), "Envelope recipient not present within To: in header" );
-        return __PACKAGE__->config_action();
+    my %addressed = map { $_ => 1 } @{ $state->{to} };
+    if ( !any { $addressed{$_} } @{ $state->{recipients} } ) {
+        warn "Envelope recipient not present within To: or Cc:, rejecting" if $debug;
+        return __PACKAGE__->config_reply( $ctx, "Envelope recipient not present within To: or Cc: in header" );
     }
     return __PACKAGE__->cont();
+}
+
+# This recipe's part of the connection's private data, replaced when given a new one
+sub _state {
+    my ( $ctx, $new ) = @_;
+    my $priv = $ctx->getpriv() // {};
+    $priv->{ +__PACKAGE__ } = $new if $new;
+    $priv->{ +__PACKAGE__ } //= { sender => '', recipients => [], from => [], to => [] };
+    $ctx->setpriv($priv);
+    return $priv->{ +__PACKAGE__ };
+}
+
+# MAIL FROM and RCPT TO arguments are <address>, or <> for the null sender
+sub _envelope_address {
+    my ($arg) = @_;
+    $arg //= '';
+    $arg =~ s/\A\s*<?|>?\s*\z//g;
+    return lc $arg;
 }
 
 1;

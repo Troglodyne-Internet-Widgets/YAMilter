@@ -9,6 +9,8 @@ Revision history for Milter-Recipe
     - yamilter no longer buffers its log output
     - Require perl 5.014, and meet the Troglodyne perlcritic policy
     - README.md is now generated from the Milter::Recipe POD
+    - Milter::Recipe::EnvelopeMatch works (#6), and works with no_accum
+    - Add Milter::Recipe->config_reply; recipes configured with action=discard no longer die looking for a reply code
 
 1.000 2026-06-29 TEODESIAN
     - First release to CPAN
