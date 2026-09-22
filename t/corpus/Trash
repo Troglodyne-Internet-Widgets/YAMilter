@@ -1,0 +1,27 @@
+From MAILER-DAEMON Mon Jan  1 00:00:00 2024
+Date: Mon, 1 Jan 2024 00:00:00 +0000
+From: Mail System Internal Data <MAILER-DAEMON@test.test>
+Subject: DON'T DELETE THIS MESSAGE -- FOLDER INTERNAL DATA
+X-IMAP: 1700000000 0000000002
+Status: RO
+
+This text is part of the internal format of your mail folder, and is not
+a real message.
+
+From sender@test.test Mon Jan  1 00:00:00 2024
+Return-Path: <sender@test.test>
+Delivered-To: rcpt@test.test
+From: sender@test.test
+To: rcpt@test.test
+Subject: Trash one
+Status: RO
+
+This first message in the trash has a line that needs quoting
+>From the start of a line, as mbox requires.
+
+From other@test.test Mon Jan  1 00:00:00 2024
+From: other@test.test
+To: rcpt@test.test
+Subject: Trash two
+
+The second message in the trash.

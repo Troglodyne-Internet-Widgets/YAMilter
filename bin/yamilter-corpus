@@ -1,0 +1,251 @@
+#!/usr/bin/env perl
+
+package YAMilter::Corpus;
+
+#ABSTRACT: Replay a pile of mail through yamilter recipes, and look for patterns in what gets through
+
+use strict;
+use warnings;
+
+use FindBin;
+use FindBin::libs;
+use Getopt::Long qw{GetOptionsFromArray};
+use Pod::Usage;
+use File::Path qw{make_path};
+
+use Milter::Corpus;
+use Milter::Corpus::Replay;
+
+=head1 USAGE
+
+    yamilter-corpus index  [--db corpus.db] --source /path/to/Maildir [--source /another]
+    yamilter-corpus run    [--db corpus.db] --config recipes.cfg [--label NAME] [--each]
+                           [--folder GLOB] [--limit N] [--jobs N] [--timeout SECONDS]
+    yamilter-corpus report [--db corpus.db] [REPORT] [--run ID | --batch ID] [--verdict accept|blocked|error]
+                           [--header NAME] [--limit N] [--tsv]
+    yamilter-corpus report [--db corpus.db] diff RUN_ID RUN_ID
+    yamilter-corpus show   [--db corpus.db] MESSAGE_ID
+    yamilter-corpus export [--db corpus.db] --to /path/to/Maildir [--run ID | --batch ID] [--verdict accept]
+
+=head1 DESCRIPTION
+
+A tool for building and testing milter recipes against real mail.
+
+First C<index> a copy of some mailboxes (Maildir++ folders and mbox files) into an SQLite database.
+Then C<run> a yamilter configuration against it, which records what the milter did with every message.
+Then C<report> on what got through to find patterns worth writing a recipe for, write it, C<run> again, and C<report diff> the two runs.
+
+Anything the reports do not cover can be asked of the database directly with C<sqlite3>; see L<Milter::Corpus> for the schema.
+
+=head1 COMMANDS
+
+=over 4
+
+=item C<index>
+
+Index every Maildir folder and mbox file under each C<--source>.
+Running it again only reads what changed.
+
+=item C<run>
+
+Start yamilter with C<--config> and replay the indexed mail through it.
+The service section of the configuration is ignored; the milter runs on a temporary socket.
+
+C<--each> makes one run per recipe in the configuration, so you can see what each one caught on its own.
+C<--folder> limits the replay to folders matching a glob, e.g. C<'*spam*'>.
+C<--jobs> replays that many messages at once.
+C<--timeout> is how long to wait for each milter reply (default 10 seconds) before recording a timeout.
+C<--yamilter> is the yamilter script to run, by default the one next to this script.
+
+=item C<report>
+
+Canned reports on the latest batch of runs (or C<--run>, C<--batch>).
+Without a report name, prints the summary.  The reports are:
+
+    summary   verdict counts, and action counts per run
+    folders   verdicts by folder
+    headers   header names common in the --verdict mail, with how common they are in blocked mail
+    values    most common values of --header in the --verdict mail
+    senders   envelope sender domains
+    helo      HELO names
+    ips       client IPs
+    replies   what the milter said when it blocked mail
+    list      the --verdict messages: id, folder, From, Subject
+    diff      messages whose action changed between two runs
+
+C<--verdict> defaults to C<accept>, i.e. the mail which got through.
+
+=item C<show>
+
+Print a message as indexed, followed by its verdict in every run.
+
+=item C<export>
+
+Copy the C<--verdict> messages into a Maildir at C<--to>, so you can read them in a mail client.
+
+=back
+
+=cut
+
+sub main {
+    my @args = @_;
+    my $cmd  = shift(@args) // '';
+
+    my %opts = (
+        db       => 'corpus.db',
+        yamilter => "$FindBin::Bin/yamilter",
+    );
+    GetOptionsFromArray(
+        \@args,  \%opts,
+        'db=s',  'source=s@', 'config=s',  'label=s',  'each', 'folder=s', 'limit=i', 'jobs=i', 'timeout=f', 'yamilter=s',
+        'run=i', 'batch=i',   'verdict=s', 'header=s', 'tsv',  'to=s',
+        'help',
+    ) or return usage(2);
+
+    return usage(0) if $opts{help} || !$cmd || $cmd eq 'help';
+
+    my %commands = (
+        index  => \&cmd_index,
+        run    => \&cmd_run,
+        report => \&cmd_report,
+        show   => \&cmd_show,
+        export => \&cmd_export,
+    );
+    my $sub = $commands{$cmd} or return usage( 2, "Unknown command '$cmd'" );
+
+    my $corpus = Milter::Corpus->new( db => $opts{db} );
+    return $sub->( $corpus, \%opts, @args );
+}
+
+sub usage {
+    my ( $exit, $msg ) = @_;
+    Pod::Usage::pod2usage( -exitval => 'NOEXIT', -verbose => 1, ( $msg ? ( -message => $msg ) : () ) );
+    return $exit;
+}
+
+sub cmd_index {
+    my ( $corpus, $opts ) = @_;
+    return usage( 2, '--source is required' ) unless $opts->{source};
+
+    foreach my $source ( @{ $opts->{source} } ) {
+        my $start = time;
+        my $stats = $corpus->index_source(
+            $source,
+            sub {
+                my $s = shift;
+                printf STDERR "\r%d files, %d read, %d new, %d duplicates, %d unchanged", @$s{qw{files read new duplicates skipped}};
+            }
+        );
+        printf STDERR "\r%s: %d files, %d read, %d new messages, %d duplicates, %d unchanged, %d gone, in %ds\n", $source, @$stats{qw{files read new duplicates skipped gone}}, time - $start;
+    }
+    my ($total) = $corpus->dbh->selectrow_array('SELECT COUNT(*) FROM messages');
+    print "$total messages indexed.\n";
+    return 0;
+}
+
+sub cmd_run {
+    my ( $corpus, $opts ) = @_;
+    return usage( 2, '--config is required' ) unless $opts->{config};
+
+    my $replay = Milter::Corpus::Replay->new(
+        corpus => $corpus,
+        script => $opts->{yamilter},
+        config => $opts->{config},
+    );
+    my $start = time;
+    my @runs  = $replay->run(
+        %$opts{qw{label each folder limit jobs timeout}},
+        progress => sub {
+            my ( $run, $done, $total ) = @_;
+            my $rate = $done / ( ( time - $start ) || 1 );
+            printf STDERR "\rrun %d: %d/%d messages (%.0f/s)", $run, $done, $total, $rate;
+        },
+    );
+    print STDERR "\n";
+    print "Recorded run(s): @runs\n";
+
+    my ( $cols, $rows ) = $corpus->report( 'summary', batch => $runs[0] );
+    print_table( $cols, $rows, $opts->{tsv} );
+    return 0;
+}
+
+sub cmd_report {
+    my ( $corpus, $opts, $name, @rest ) = @_;
+    $name //= 'summary';
+    my ( $cols, $rows ) = $corpus->report(
+        $name,
+        %$opts{qw{run batch limit verdict header}},
+        runs => \@rest,
+    );
+    print_table( $cols, $rows, $opts->{tsv} );
+    return 0;
+}
+
+sub cmd_show {
+    my ( $corpus, $opts, $id ) = @_;
+    return usage( 2, 'show needs a message id' ) unless $id;
+    my $raw = $corpus->raw($id) // die "No message $id, or it cannot be read.\n";
+    print $raw;
+    print "\n", '-' x 72, "\n";
+
+    print_table( $corpus->query( 'SELECT folder, path, flags FROM locations WHERE message_id = ?',                                                                                   $id ) );
+    print_table( $corpus->query( 'SELECT mail_from, rcpt_to, helo, client_ip, client_host, derived FROM envelope WHERE message_id = ?',                                              $id ) );
+    print_table( $corpus->query( 'SELECT r.run_id, u.label, r.action, r.reply, r.elapsed_ms FROM results r JOIN runs u ON u.id = r.run_id WHERE r.message_id = ? ORDER BY r.run_id', $id ) );
+    return 0;
+}
+
+sub cmd_export {
+    my ( $corpus, $opts ) = @_;
+    return usage( 2, '--to is required' ) unless $opts->{to};
+
+    my $to = $opts->{to};
+    make_path( map { "$to/$_" } qw{cur new tmp} );
+
+    my @ids = $corpus->verdict_messages( %$opts{qw{run batch verdict}} );
+    my $n   = 0;
+    foreach my $id (@ids) {
+        my $raw = $corpus->raw($id) // next;
+        my ($sha) = $corpus->dbh->selectrow_array( 'SELECT sha256 FROM messages WHERE id = ?', undef, $id );
+        open( my $fh, '>:raw', "$to/cur/$id.$sha:2," ) or die "Could not write to $to/cur: $!";
+        print $fh $raw;
+        close $fh;
+        $n++;
+    }
+    print "Exported $n messages to $to\n";
+    return 0;
+}
+
+sub print_table {
+    my ( $cols, $rows, $tsv ) = @_;
+    return unless $cols;
+    my @rows = map {
+        [ map { my $v = $_ // ''; $v =~ s/[\r\n\t]+/ /g; $v } @$_ ]
+    } @$rows;
+
+    if ($tsv) {
+        print join( "\t", @$cols ), "\n";
+        print join( "\t", @$_ ),    "\n" for @rows;
+        return;
+    }
+
+    # Keep wide columns (subjects, replies) from wrapping every line
+    for my $row (@rows) {
+        $_ = length($_) > 80 ? substr( $_, 0, 77 ) . '...' : $_ for @$row;
+    }
+    my @width = map { length } @$cols;
+    for my $row (@rows) {
+        for my $i ( 0 .. $#$row ) {
+            $width[$i] = length( $row->[$i] ) if length( $row->[$i] ) > $width[$i];
+        }
+    }
+    my $fmt = join( '  ', map { "%-${_}s" } @width ) . "\n";
+    printf $fmt, @$cols;
+    printf $fmt, map { '-' x $_ } @width;
+    printf $fmt, @$_ for @rows;
+    print "\n";
+    return;
+}
+
+exit main(@ARGV) unless caller;
+
+1;

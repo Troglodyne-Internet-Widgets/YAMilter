@@ -59,6 +59,37 @@ and considered sufficient example for other authors to do the same.
 Writing them should be made significantly easier thanks to being able to test with `Milter::Client`.
 There is also a testing helper library in `t/lib/YAMilterTest.pm` that facilitates actually running the milter in testing context.
 
+### Testing recipes against real mail
+
+`yamilter-corpus` replays a copy of your mailboxes through a yamilter configuration.
+It records the verdict for each message in an SQLite database.
+You can then look at the mail that got through for patterns, and write a recipe for them.
+
+1. Index a copy of your mail. The tool reads Maildir++ folders and mbox files.
+   It does not copy the mail into the database. It stores a pointer to each message, plus its headers.
+
+       yamilter-corpus index --db corpus.db --source /path/to/Maildir
+
+2. Replay the mail through your recipes. `--each` makes one run for each recipe, so you see what each recipe blocked.
+
+       yamilter-corpus run --db corpus.db --config recipes.cfg --each --jobs 8
+
+3. Look at the mail that got through.
+
+       yamilter-corpus report --db corpus.db headers
+       yamilter-corpus report --db corpus.db values --header Subject
+       yamilter-corpus report --db corpus.db list
+
+4. Change a recipe, run again, and compare the two runs.
+
+       yamilter-corpus report --db corpus.db diff 1 2
+
+Run `yamilter-corpus --help` for all reports and options.
+You can also query the database with `sqlite3`. `perldoc Milter::Corpus` describes the tables.
+
+A recipe section in the configuration must have at least one key, for example `action=reject`.
+Config::Simple ignores an empty section, so yamilter does not load that recipe.
+
 ### Language
 
 Reject mails which are not comprehensible to your userbase.
