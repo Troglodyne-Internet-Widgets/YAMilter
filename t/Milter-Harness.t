@@ -1,5 +1,7 @@
+use 5.014;
 use strict;
-use warnings;
+use warnings FATAL => 'all';
+use re '/aa';
 
 use FindBin::libs;
 use Cwd;
@@ -20,9 +22,9 @@ sub config {
     return write_file( "$tmp/yamilter.cfg", "[service]\nsock=$tmp/yamilter.sock\npidfile=$tmp/yamilter.pid\nworkers=1\n$recipes" );
 }
 
-like( dies { Milter::Harness->new( config => config('') ) },                    qr/script is required/,         'script required' );
-like( dies { Milter::Harness->new( script => $yamilter ) },                     qr/config is required/,         'config required' );
-like( dies { Milter::Harness->new( script => $yamilter, config => '/bogus' ) }, qr/No such configuration file/, 'config must exist' );
+like( dies { Milter::Harness->new( config => config('') ) },                    qr/script is required/,                          'script required' );
+like( dies { Milter::Harness->new( script => $yamilter ) },                     qr/config is required/,                          'config required' );
+like( dies { Milter::Harness->new( script => $yamilter, config => '/bogus' ) }, qr/Could not read configuration file \/bogus: /, 'config must exist' );
 
 subtest 'start, connect, stop' => sub {
     write_file( "$tmp/yamilter.sock", 'stale' );
@@ -50,3 +52,11 @@ subtest 'milter which will not start' => sub {
 };
 
 done_testing();
+
+__END__
+
+=head1 DESCRIPTION
+
+L<Milter::Harness> starts, connects to and stops a real yamilter, and reports one that will not start.
+
+=cut

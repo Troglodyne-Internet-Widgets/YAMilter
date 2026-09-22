@@ -1,5 +1,7 @@
+use 5.014;
 use strict;
-use warnings;
+use warnings FATAL => 'all';
+use re '/aa';
 
 use FindBin::libs;
 use Test2::V0;
@@ -32,7 +34,7 @@ subtest 'index_source' => sub {
     my ( undef, $rows ) = $corpus->query('SELECT folder, kind, flags FROM locations ORDER BY folder, key');
     is(
         $rows,
-        [ [ '.', 'maildir', 'S' ], [ '.', 'maildir', '' ], [ '.INBOX.spam', 'maildir', 'ST' ], [ '.INBOX.spam', 'maildir', 'S' ], [ 'Trash', 'mbox', 'S' ], [ 'Trash', 'mbox', '' ] ],
+        [ [qw{. maildir S}], [ qw{. maildir}, '' ], [qw{.INBOX.spam maildir ST}], [qw{.INBOX.spam maildir S}], [qw{Trash mbox S}], [ qw{Trash mbox}, '' ] ],
         'folders, kinds and flags recorded'
     );
 
@@ -72,15 +74,15 @@ subtest 'headers & envelope' => sub {
     is(
         $rows,
         [
-            [ 'sender@test.test',   'rcpt@test.test',       'mail.test.test', '192.0.2.10',   'relay.test.test', '' ],
-            [ 'absender@test.test', 'empfaenger@test.test', 'unknown',        undef,          undef,             'mail_from,rcpt_to,helo,client_ip' ],
-            [ 'bulk@test.test',     'rcpt@test.test',       'bulk.test.test', '198.51.100.7', 'unknown',         '' ],
+            [ qw{sender@test.test rcpt@test.test mail.test.test 192.0.2.10 relay.test.test}, '' ],
+            [ qw{absender@test.test empfaenger@test.test unknown}, undef, undef, 'mail_from,rcpt_to,helo,client_ip' ],
+            [ qw{bulk@test.test rcpt@test.test bulk.test.test 198.51.100.7 unknown}, '' ],
         ],
         'envelope from Return-Path, Delivered-To and the first public Received hop, else guessed and flagged'
     );
 
     my $env = Milter::Corpus::derive_envelope( [ [ 'Return-Path', '<>' ], [ 'Received', 'from a (b [10.1.2.3]) by c' ], [ 'Received', "from d\n\t(e [IPv6:2001:db8::1]) by f" ] ] );
-    is( [ @$env{qw{mail_from helo client_ip client_host}} ], [ '', 'd', '2001:db8::1', 'e' ], 'null sender kept, private hops skipped, IPv6 and folded Received read' );
+    is( [ @$env{qw{mail_from helo client_ip client_host}} ], [ '', qw{d 2001:db8::1 e} ], 'null sender kept, private hops skipped, IPv6 and folded Received read' );
 };
 
 subtest 'messages' => sub {
@@ -154,3 +156,11 @@ subtest 'reports' => sub {
 };
 
 done_testing();
+
+__END__
+
+=head1 DESCRIPTION
+
+L<Milter::Corpus>: indexing the fixture mail in F<t/corpus>, reading it back, envelope derivation, and the reports over recorded results.
+
+=cut

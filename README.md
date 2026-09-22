@@ -1,24 +1,39 @@
-# YAMilter
+# NAME
+
+Milter::Recipe - Framework for building a milter based on various recipes
+
+# VERSION
+
+version 1.001
+
+# SYNOPSIS
+
+```perl
+# What yamilter --config /etc/yamilter.cfg does
+use Milter::Recipe;
+Milter::Recipe->new('/etc/yamilter.cfg')->run();
+```
+
+# DESCRIPTION
 
 Yet another Milter program.
-
-`yamilter --config /etc/yamilter.cfg`
 
 The focus here is to have some overlooked filters & common business logic that you can load up with simple configuration.
 
 Any sub-namespace of `Milter::Recipe` is considered available to be loaded.
 
-Based on `Sendmail::PMilter`; most of the work making a recipe is in writing a milter callback used thereby.
+Based on [Sendmail::PMilter](https://metacpan.org/pod/Sendmail%3A%3APMilter); most of the work making a recipe is in writing a milter callback used thereby.
 
-While there exist older modular milters such as Mail::Milter, they have not recieved updates in many, many years.
+While there exist older modular milters such as `Mail::Milter`, they have not received updates in many, many years.
 Most of the functionality therein is better covered by other software such as opendmarc/opendkim or postfix itself.
 
-## Configuration
+# CONFIGURATION
 
 ```
 [service]
-pidfile=/var/run/YAMilter.pid
-sock=/var/run/YAMilter.sock
+pidfile=/var/run/yamilter.pid
+sock=/var/run/yamilter.sock
+workers=10
 debug=0
 [Language]
 langs=en, fr, es
@@ -28,20 +43,22 @@ action=discard
 
 List the recipes you want to load, and then specify any configuration relevant to them (if applicable).
 
-### Service configuration
+A recipe section must have at least one key (`action=reject` will do).
+[Config::Simple](https://metacpan.org/pod/Config%3A%3ASimple) does not see a section with no keys, so the recipe is not loaded.
 
-Included in the service/ directory is a systemd service configuration you can drop in and use right away.
-It is written to refer to /etc/yamilter.cfg as the config file.
+## Service configuration
 
-The `service` section above allows configuration of where the PID/Socket files live.
+Included in the `service/` directory is a systemd service configuration you can drop in and use right away.
+It is written to refer to `/etc/yamilter.cfg` as the config file.
 
+The `service` section above allows configuration of where the PID/Socket files live, and how many workers to run.
 The values above are the defaults if you omit these parameters.
 
 You'll likely want to configure chrooted dovecot to have the sock inside its chroot.
 
-### Recipe configuration
+## Recipe configuration
 
-Each recipe will accept an 'action' parameter.
+Each recipe will accept an `action` parameter.
 By default, each recipe MUST reject, but if the action is set, do that instead.
 
 The only meaningful actions to take other than reject are discard or tempfail.
@@ -51,81 +68,60 @@ TODO: add a 'spam' action to add a spam header and accept.
 
 All other recipe configuration is up to the recipe itself and you should refer to their documentation.
 
-## Milter Recipes
+# RECIPES
 
 The ones provided with the YAMilter program are both scratching my personal itch,
 and considered sufficient example for other authors to do the same.
 
-Writing them should be made significantly easier thanks to being able to test with `Milter::Client`.
-There is also a testing helper library in `t/lib/YAMilterTest.pm` that facilitates actually running the milter in testing context.
+- [Milter::Recipe::Language](https://metacpan.org/pod/Milter%3A%3ARecipe%3A%3ALanguage)
 
-### Testing recipes against real mail
+    Reject mails which are not comprehensible to your userbase.
 
-`yamilter-corpus` replays a copy of your mailboxes through a yamilter configuration.
-It records the verdict for each message in an SQLite database.
+Writing them should be made significantly easier thanks to being able to test with [Milter::Client](https://metacpan.org/pod/Milter%3A%3AClient),
+and [Milter::Harness](https://metacpan.org/pod/Milter%3A%3AHarness), which runs the milter for the duration of a test.
+
+## Testing recipes against real mail
+
+`yamilter-corpus` replays a copy of your mailboxes through a yamilter configuration,
+and records the verdict for each message in an SQLite database.
 You can then look at the mail that got through for patterns, and write a recipe for them.
 
-1. Index a copy of your mail. The tool reads Maildir++ folders and mbox files.
-   It does not copy the mail into the database. It stores a pointer to each message, plus its headers.
+```
+yamilter-corpus index  --db corpus.db --source /path/to/Maildir
+yamilter-corpus run    --db corpus.db --config recipes.cfg --each --jobs 8
+yamilter-corpus report --db corpus.db headers
+yamilter-corpus report --db corpus.db diff 1 2
+```
 
-       yamilter-corpus index --db corpus.db --source /path/to/Maildir
+# FURTHER IDEAS
 
-2. Replay the mail through your recipes. `--each` makes one run for each recipe, so you see what each recipe blocked.
-
-       yamilter-corpus run --db corpus.db --config recipes.cfg --each --jobs 8
-
-3. Look at the mail that got through.
-
-       yamilter-corpus report --db corpus.db headers
-       yamilter-corpus report --db corpus.db values --header Subject
-       yamilter-corpus report --db corpus.db list
-
-4. Change a recipe, run again, and compare the two runs.
-
-       yamilter-corpus report --db corpus.db diff 1 2
-
-Run `yamilter-corpus --help` for all reports and options.
-You can also query the database with `sqlite3`. `perldoc Milter::Corpus` describes the tables.
-
-A recipe section in the configuration must have at least one key, for example `action=reject`.
-Config::Simple ignores an empty section, so yamilter does not load that recipe.
-
-### Language
-
-Reject mails which are not comprehensible to your userbase.
-Explicit whitelist specified by `langs` in the config file.
-
-Uses Lingua::Identify to scan the body of messages and rejects those without a high probability of being written in the preferred language(s).
-
-## TODO: Further Ideas
-
-Based on the spam I currently recieve, implementing these below (and the above) would remove 99.99% of the spam I recieve on my mx.
+Based on the spam I currently receive, implementing these below (and the above) would remove 99.99% of the spam I receive on my mx.
 
 I suspect most of this has prior art elsewhere, as if I could come up with this in an afternoon I'm sure for-pay MXes figured these out years ago.
 
-### MatchingFrom
+## MatchingFrom
 
 Reject mails which have a differing envelope sender and 'From' Header.
 
 A common oversight by spammers, especially when they are sending spoofed email from a rooted box.
 
-### RejectUnsolicitedMailingLists
+## RejectUnsolicitedMailingLists
 
 Spammers now frequently include a Mailing list unsubscribe header, because google looks for it specifically.
 
 Normally, mailing list software has a mechanism to verify that a user has in fact signed up for this list.
 
-Spammers do not get in the habit of hosting services which might respond in the affirmative to this, as people tend to retaliate against them quite fiercly.
+Spammers do not get in the habit of hosting services which might respond in the affirmative to this, as people tend to retaliate against them quite fiercely.
 
 As such, checking for this much like sender verification connections is valuable.
 
-It is also of value to reject mails without an unsubscribe header, but some variation of "to stop recieving such communications reply, or click etc".
+It is also of value to reject mails without an unsubscribe header, but some variation of "to stop receiving such communications reply, or click etc".
 
-### 419Detect
+## 419Detect
 
 Uses an LLM to identify if an email is obviously a 419 (advance fee) scam of some kind, and rejects it.
 
-### InsiderThreats
+## InsiderThreats
 
 Reject sender domains coming from local which are known to not resolve to this host.
 
@@ -134,7 +130,7 @@ You will eventually get a client that wants to run sendmail overtime to phish wi
 
 This way they at least have to go to the trouble of buying a domain to attempt fraud.
 
-### PhishingDomains
+## PhishingDomains
 
 Reject mails from domains which resolve to other live domains when homoglyph replaced, as these are almost always phishing.
 
@@ -142,17 +138,133 @@ Reject mails from domains which resolve to other live domains when the TLD is sw
 
 (You should already configure your mx to reject domains that do not resolve).
 
-### ASNBlock
+## ASNBlock
 
 Outright block entire ASNs.  For when all else fails.
 
-### HeaderIfSize
+## HeaderIfSize
 
 Add a header (likely to control relaying behavior) if the mail is above a certain size.
 
 It is a common practice to throw up your hands and use a for-pay SMTP relay to be deliverable to the big 10 email providers.
-However this can get pricey (or fail outright) if you send things with big attachements, and you probably want to avoid that.
+However this can get pricey (or fail outright) if you send things with big attachments, and you probably want to avoid that.
 
-### LICENSE
+# CONSTRUCTOR
 
-MIT
+## new($cfile)
+
+Creates the Milter recipe singleton.  Subsequent calls simply return the same object.
+
+## pidfile, sock, workers, cfile, debug
+
+The `service` settings from the configuration (with their defaults), and the configuration file's path.
+
+# STATIC METHODS
+
+## $class->config()
+
+Retrieve the config section relevant to the current class.
+
+If your Recipe requires configuration, this is the method to call.
+
+## $class->config\_action()
+
+Every recipe MUST support returning an action to take after doing its' test.
+
+Acceptable actions are (reject, discard, tempfail, accept, continue, loop).
+
+This is the sub to call to accomplish that:
+
+```
+...
+return __PACKAGE__->config_action();
+...
+```
+
+## ($smtp\_code, $esmtp\_code) = $class->config\_code()
+
+Sometimes you will want a callback to do $ctx->setreply() to have a complicated response.
+
+This will map the config action to the appropriate response code to use as the first arg to setreply().
+
+Dies in the event your action has no appropriate code (e.g. discard, loop).
+
+# METHODS
+
+## run
+
+Actually run the milter.
+
+Sets up some default milter callbacks that generally do the right thing:
+
+- 1)
+Continue until EOM, then accept.  It is presumed any milter callbacks you configure do what they need to do before this point.
+- 2)
+On Connect() we setpriv an empty hashref that you can store connection specific state within to support functionality requiring multiple callbacks.
+- 3)
+On Header() and Body() we accumulate the header and body fragments into the 'header' and 'body' keys of said hashref, that you might consult them in EOH, EOB and EOM.
+Each header is accumulated as a `"Name: value\n"` line.
+
+3\. Has some consequences in that if you don't limit the size of msgs and headers.
+With 10 workers each handling 100 conns, your upper limit if say, you get a bunch of 1MB mails would be ~1GB of ram worst case.
+
+DOS prevention is outside the scope of this milter.  You should limit the scope of such with mailserver size limits and # of workers available to the milter.
+
+If absolutely necessary, accumulation can be disabled with the `service.no_accum` config flag, but you will need to use Milter modules which can stream rather than slurp.
+This is advertised to modules as the `no_accum` flag passed in their config, so they can make sane decisions about this.
+It is necessary that Milter::Recipe child modules document what they do about this.
+
+The acccumulation feature is primarily here to ease development and testing of new milters,
+but there exist rare problems which require full context to be correct and which have incompressible intermediate results.
+
+## cb
+
+Return the hash of callbacks to be run by the milter.
+
+## loaded\_recipes
+
+The package names of the recipes loaded from the configuration, sorted.
+
+## accept, cont, reject
+
+Return `SMFIS_ACCEPT`, `SMFIS_CONTINUE` or `SMFIS_REJECT`, for recipe callbacks to return.
+Most callbacks want `__PACKAGE__->cont()`, or `__PACKAGE__->config_action()` when they have made up their mind.
+
+# BUGS
+
+Please report any bugs or feature requests on the bugtracker website
+[https://github.com/Troglodyne-Internet-Widgets/YAMilter/issues](https://github.com/Troglodyne-Internet-Widgets/YAMilter/issues)
+
+When submitting a bug or request, please include a test-file or a
+patch to an existing test-file that illustrates the bug or desired
+feature.
+
+# AUTHORS
+
+Current Maintainers:
+
+- George S. Baugh <teodesian@gmail.com>
+
+# CONTRIBUTOR
+
+Andy Baugh <andy@troglodyne.net>
+
+# COPYRIGHT AND LICENSE
+
+Copyright (c) 2026 Troglodyne LLC
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

@@ -2,8 +2,10 @@ package Milter::Corpus;
 
 # ABSTRACT: SQLite index of a pile of mail, and what the milter thought of each piece
 
+use 5.014;
 use strict;
-use warnings;
+use warnings FATAL => 'all';
+use re '/aa';
 
 use DBI;
 use Digest::SHA qw{sha256_hex};
@@ -23,7 +25,8 @@ our @EXPORT_OK = qw{split_message};
     my $corpus = Milter::Corpus->new( db => 'corpus.db' );
     $corpus->index_source('/path/to/Maildir');
 
-    my $raw = $corpus->raw($message_id);
+    my ($first) = @{ $corpus->messages( limit => 1 ) };
+    my $raw = $corpus->raw( $first->{id} );
     my ( $fields, $body ) = Milter::Corpus::split_message($raw);
 
 =head1 DESCRIPTION
@@ -320,6 +323,12 @@ sub new {
     return bless( { %args, dbh => $dbh }, $class );
 }
 
+=head2 dbh
+
+The L<DBI> handle on the corpus database.
+
+=cut
+
 sub dbh { $_[0]->{dbh} }
 
 =head1 FUNCTIONS
@@ -426,7 +435,8 @@ sub _found {
         return;
     }
 
-    return unless -f $path && -s _;
+    # Empty files are skipped, and so are FIFOs and devices, whose size is 0 too; reading a FIFO would hang
+    return unless -s $path;
     open( my $fh, '<', $path ) or return;
     read( $fh, my $magic, 5 );
     close $fh;
@@ -449,7 +459,7 @@ sub _index_maildir {
         foreach my $file ( sort grep { !m/^\./ } readdir($dh) ) {
             my $path = "$dir/$sub/$file";
             my ( $size, $mtime ) = ( stat($path) )[ 7, 9 ];
-            next unless defined $size && -f _;
+            next if !defined $size || -d _;
             $self->{stats}{files}++;
 
             # The unique part of a Maildir name survives the renames that flag changes make
@@ -523,7 +533,7 @@ sub _index_mbox {
         $raw =~ s/\n\n\z/\n/;
 
         # UW-IMAP keeps folder metadata in a fake first message
-        next if $raw =~ m/^X-IMAP(?:base)?:/mi && $raw =~ m/FOLDER INTERNAL DATA/;
+        next if $raw =~ m/^X-IMAP(?:base)?:/mi && index( $raw, 'FOLDER INTERNAL DATA' ) >= 0;
 
         $self->{stats}{files}++;
         $self->_store(
@@ -716,7 +726,7 @@ sub _is_public_ip {
         return 0 if $x == 100 && $y >= 64 && $y <= 127;
         return 1;
     }
-    return 0 unless $ip =~ m/:/;
+    return 0 if index( $ip, ':' ) < 0;
     return 0 if $ip eq '::1' || $ip =~ m/^(?:fe[89ab]|f[cd])/i;
     return 1;
 }
@@ -911,7 +921,7 @@ sub report {
         );
     }
 
-    my $report = $REPORTS{$name} or die "No such report '$name'.  Try one of: " . join( ', ', sort( 'summary', 'headers', 'diff', keys(%REPORTS) ) ) . "\n";
+    my $report = $REPORTS{$name} or die "No such report '$name'.  Try one of: " . join( ', ', sort( qw{summary headers diff}, keys(%REPORTS) ) ) . "\n";
     die "The values report needs a header\n" if $name eq 'values' && !$opts{header};
 
     my @where = ( 'scope = ?', 'scope_id = ?' );

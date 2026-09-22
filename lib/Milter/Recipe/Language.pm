@@ -2,24 +2,51 @@ package Milter::Recipe::Language;
 
 #ABSTRACT: Milter which will reject mails written in languages your users don't understand
 
+use 5.014;
 use strict;
-use warnings;
-
-no warnings qw{experimental};
-use feature qw{state};
-use warnings;
+use warnings FATAL => 'all';
+use re '/aa';
 
 use parent qw{Milter::Recipe};
 
 use List::Util       qw{any};
 use Lingua::Identify qw(:language_identification);
 
+=head1 DESCRIPTION
+
+Reject mails which are not comprehensible to your userbase.
+
+Uses L<Lingua::Identify> to guess the language of each chunk of a message body as it arrives,
+and takes the configured action on the first chunk which is not in one of the configured languages.
+
+It works on each chunk rather than the accumulated body, so it works with C<no_accum> set.
+
+=head1 CONFIGURATION
+
+    [Language]
+    langs=en, es
+    action=defer
+
+=over 4
+
+=item C<langs>
+
+The languages your users read, as the two letter codes L<Lingua::Identify> returns.  Required.
+
+=item C<action>
+
+What to do with mail in any other language.  See L<Milter::Recipe/Recipe configuration>.
+
+=back
+
+=cut
+
 our %cb = (
     body => \&body,
 );
 
 sub body {
-    my ( $ctx, $body_chunk, $body_length ) = @_;
+    my ( $ctx, $body_chunk ) = @_;
 
     state @allowed_langs;
     state $debug;

@@ -2,8 +2,10 @@ package Milter::Recipe::EnvelopeMatch;
 
 #ABSTRACT: Milter to ensure the envelope sender and From: header in email matches
 
+use 5.014;
 use strict;
-use warnings;
+use warnings FATAL => 'all';
+use re '/aa';
 
 use parent qw{Milter::Recipe};
 
@@ -20,6 +22,26 @@ Setting no_accum is not supported by this plugin at this time.
 
 It should be possible to have full support for such, however.
 
+=head1 BUGS
+
+This recipe does not work yet: its callbacks are wired up wrongly and it dies at end of header.
+See L<https://github.com/Troglodyne-Internet-Widgets/YAMilter/issues/6>.
+
+=head1 CALLBACKS
+
+=head2 store_envelope_sender($ctx, $address), store_envelope_recipient($ctx, $address)
+
+Keep the envelope sender or recipient in the connection's private data.
+
+=head2 store_envelope($type, $ctx, $address)
+
+What the two above call, with C<$type> being C<sender> or C<recipient>.
+
+=head2 check_header_vs_envelope($ctx)
+
+At end of header, take the configured action if the From: header does not contain the envelope sender,
+or the To: header does not contain the envelope recipient.
+
 =cut
 
 our %cb = (
@@ -34,7 +56,7 @@ sub store_envelope_sender    { store_envelope( 'sender',    @_ ) }
 sub store_envelope_recipient { store_envelope( 'recipient', @_ ) }
 
 sub store_envelope {
-    my ( $type, $ctx, $data, $dlen ) = @_;
+    my ( $type, $ctx, $data ) = @_;
 
     # Email validation is basically crazy.
     my ($addr) = $data =~ m/<?(.+@[^>]+)>?/;
@@ -45,7 +67,7 @@ sub store_envelope {
 }
 
 sub check_header_vs_envelope {
-    my ( $ctx, $data, $dlen ) = @_;
+    my ($ctx) = @_;
 
     my $stash = $ctx->gepriv();
     my $conf  = __PACKAGE__->config();
@@ -68,3 +90,5 @@ sub check_header_vs_envelope {
     }
     return __PACKAGE__->cont();
 }
+
+1;

@@ -1,0 +1,70 @@
+#!/bin/sh
+
+# Auto-tidy staged Perl before it lands.
+#
+# There is a .perltidyrc, and a tree stays tidy to it only if something makes it.
+# Left to people, it does not: tidying a file you are changing three lines of
+# buries the change in a hundred lines of reformatting, so the reasonable thing
+# is to skip it, and the tree drifts until a mass tidy is the only way back.
+# One commit's worth at a time is small enough that nobody has to weigh it up.
+#
+# Install it: cp git-hooks/pre-commit .git/hooks/
+#
+# A file qualifies three ways:
+#   - a .pm, .pl or .t extension
+#   - a .PL extension, which is how a Makefile.PL gets covered
+#   - executable with perl on its shebang line, which is how the extensionless
+#     scripts in bin/ get covered
+#
+# .t is in there because test files are often not executable, and the shebang
+# rule alone would then tidy whichever ones happen to be and let the rest drift.
+
+# Redirect output to stderr.
+exec 1>&2
+
+if ! command -v perltidy >/dev/null 2>&1
+then
+    echo "pre-commit: perltidy is not on PATH, skipping the tidy pass."
+    exit 0
+fi
+
+# ACMR so that a file deleted in this commit is not handed to perltidy, which
+# would fail on a path that is no longer there.
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+
+to_tidy=''
+for file in $staged
+do
+    test -f "$file" || continue
+
+    case "$file" in
+        *.pm|*.pl|*.PL|*.t)
+            to_tidy="$to_tidy $file"
+            continue
+            ;;
+    esac
+
+    if test -x "$file" && head -n 1 "$file" | grep -Eq '^#!.*perl'
+    then
+        to_tidy="$to_tidy $file"
+    fi
+done
+
+# Quoted here, because a bare [ $to_tidy ] is a syntax error the moment there is
+# more than one file -- which would stop the hook working in exactly the commits
+# that need it most.  Unquoted below, because there the word splitting is what
+# turns one string into an argument list.
+if [ -n "$to_tidy" ]
+then
+    echo "Auto-tidying perl changes..."
+
+    # -bext='/' makes perltidy delete the backup it would otherwise leave
+    # sitting next to the file as <name>.bak.
+    perltidy -b -bext='/' $to_tidy || {
+        echo "pre-commit: perltidy failed, leaving the commit alone."
+        exit 1
+    }
+
+    git update-index --add $to_tidy
+    echo "Done."
+fi

@@ -1,0 +1,74 @@
+# Troglodyne perlcritic policy
+severity  = 1
+only      = 1
+force     = 0
+verbose   = 1
+#theme     = 
+#include   =
+#exclude   =
+criticism-fatal = 1
+color     = 1
+allow-unsafe = 1
+# Usability
+[Modules::RequirePerlVersion]
+[Documentation::RequirePod]
+# Security
+[ValuesAndExpressions::PreventSQLInjection]
+; [CodeLayout::RequireASCII] is not here on purpose.  Every file declares
+; use 5.041, which turns on source::encoding "ascii" and makes a non-ASCII
+; character in code a compile error -- stricter than the policy, and not
+; skippable.  The policy also applies to POD, where the only thing it ever
+; caught was a contributor's name in the section Dist::Zilla generates, and
+; spelling somebody's name wrong is not a code standard.
+[RegularExpressions::RequireDefault]
+strict = 1
+# PEBCAK catches
+[BuiltinFunctions::ProhibitDeleteOnArrays]
+[Subroutines::ProhibitAmbiguousFunctionCalls]
+[ValuesAndExpressions::ProhibitSingleArgArraySlice]
+[Bangs::ProhibitUselessRegexModifiers]
+[Bangs::ProhibitCommentedOutCode]
+[Tics::ProhibitUseBase]
+[Plicease::ProhibitLeadingZeros]
+[RegularExpressions::ProhibitEmptyAlternatives]
+[ValuesAndExpressions::UnexpandedSpecialLiteral]
+[CodeLayout::ProhibitIfIfSameLine]
+[ValuesAndExpressions::ConstantBeforeLt]
+[ValuesAndExpressions::ProhibitDuplicateHashKeys]
+# any access checks are necessarily a TOCTOU waiting to happen
+[ValuesAndExpressions::ProhibitFiletest_f]
+[ValuesAndExpressions::ProhibitFiletest_rwxRWX]
+# Bikeshed
+[CognitiveComplexity::ProhibitExcessCognitiveComplexity]
+warn_level = 40
+info_level = 30
+[Variables::ProhibitUselessInitialization]
+[PreferredModules]
+config = .preferred_modules.ini
+[logicLAB::RequireSheBang]
+formats = #!/usr/bin/env perl
+# Performance
+[logicLAB::ProhibitShellDispatch]
+[ProhibitPipeOpen]
+[Performance::ProhibitRegexForSimpleSubstring]
+[ProhibitUseLib]
+[ProhibitUsageSubs]
+[RequireQwForLiteralLists]
+[ProhibitNoWarningsRedefine]
+[RequireFatalWarnings]
+[ProhibitUnusedImports]
+# Modules imported for a side effect rather than for a symbol, which the policy
+# cannot see.  `re` is here because every file says `use re '/aa'`.  Add your
+# own: IO::Prompter installs prompt() from a custom import rather than @EXPORT,
+# and anything loaded by name from a string is invisible the same way.
+# Exporter is imported for its import(), and Test2::Plugin::NoWarnings for the
+# test it adds at the end of the run.
+allow = re Exporter Test2::Plugin::NoWarnings
+# Extensions to perl -c
+[CompileTime]
+# Good idea, but module doesn't install due to bad testsuite...we'll have to fork
+#[Dynamic::ValidateAgainstSymbolTable]
+#at_inc_suffix=lib
+#inspect_required_modules=1
+#inspect_autoloaders=1
+#max_recursion=2

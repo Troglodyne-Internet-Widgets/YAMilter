@@ -4,8 +4,10 @@ package YAMilter::Corpus;
 
 #ABSTRACT: Replay a pile of mail through yamilter recipes, and look for patterns in what gets through
 
+use 5.014;
 use strict;
-use warnings;
+use warnings FATAL => 'all';
+use re '/aa';
 
 use FindBin;
 use FindBin::libs;
@@ -96,13 +98,13 @@ sub main {
         yamilter => "$FindBin::Bin/yamilter",
     );
     GetOptionsFromArray(
-        \@args,  \%opts,
-        'db=s',  'source=s@', 'config=s',  'label=s',  'each', 'folder=s', 'limit=i', 'jobs=i', 'timeout=f', 'yamilter=s',
-        'run=i', 'batch=i',   'verdict=s', 'header=s', 'tsv',  'to=s',
+        \@args, \%opts,
+        qw{db=s source=s@ config=s label=s each folder=s limit=i jobs=i timeout=f yamilter=s},
+        qw{run=i batch=i verdict=s header=s tsv to=s},
         'help',
-    ) or return usage(2);
+    ) or return _pod2usage(2);
 
-    return usage(0) if $opts{help} || !$cmd || $cmd eq 'help';
+    return _pod2usage(0) if $opts{help} || !$cmd || $cmd eq 'help';
 
     my %commands = (
         index  => \&cmd_index,
@@ -111,21 +113,22 @@ sub main {
         show   => \&cmd_show,
         export => \&cmd_export,
     );
-    my $sub = $commands{$cmd} or return usage( 2, "Unknown command '$cmd'" );
+    my $sub = $commands{$cmd} or return _pod2usage( 2, "Unknown command '$cmd'" );
 
     my $corpus = Milter::Corpus->new( db => $opts{db} );
     return $sub->( $corpus, \%opts, @args );
 }
 
-sub usage {
+# Print the USAGE section of the POD, and return the exit code for main() to hand back
+sub _pod2usage {
     my ( $exit, $msg ) = @_;
-    Pod::Usage::pod2usage( -exitval => 'NOEXIT', -verbose => 1, ( $msg ? ( -message => $msg ) : () ) );
+    Pod::Usage::pod2usage( -exitval => 'NOEXIT', -verbose => 1, -input => __FILE__, -output => ( $exit ? \*STDERR : \*STDOUT ), ( $msg ? ( -message => $msg ) : () ) );
     return $exit;
 }
 
 sub cmd_index {
     my ( $corpus, $opts ) = @_;
-    return usage( 2, '--source is required' ) unless $opts->{source};
+    die "--source is required\n" unless $opts->{source};
 
     foreach my $source ( @{ $opts->{source} } ) {
         my $start = time;
@@ -145,7 +148,7 @@ sub cmd_index {
 
 sub cmd_run {
     my ( $corpus, $opts ) = @_;
-    return usage( 2, '--config is required' ) unless $opts->{config};
+    die "--config is required\n" unless $opts->{config};
 
     my $replay = Milter::Corpus::Replay->new(
         corpus => $corpus,
@@ -183,7 +186,7 @@ sub cmd_report {
 
 sub cmd_show {
     my ( $corpus, $opts, $id ) = @_;
-    return usage( 2, 'show needs a message id' ) unless $id;
+    die "show needs a message id\n" unless $id;
     my $raw = $corpus->raw($id) // die "No message $id, or it cannot be read.\n";
     print $raw;
     print "\n", '-' x 72, "\n";
@@ -196,7 +199,7 @@ sub cmd_show {
 
 sub cmd_export {
     my ( $corpus, $opts ) = @_;
-    return usage( 2, '--to is required' ) unless $opts->{to};
+    die "--to is required\n" unless $opts->{to};
 
     my $to = $opts->{to};
     make_path( map { "$to/$_" } qw{cur new tmp} );

@@ -2,14 +2,16 @@ package Milter::Corpus::Replay;
 
 # ABSTRACT: Replay indexed mail through yamilter and record what it did with each piece
 
+use 5.014;
 use strict;
-use warnings;
+use warnings FATAL => 'all';
+use re '/aa';
 
 use Config::Simple;
 use Digest::SHA qw{sha256_hex};
 use File::Temp;
 use IO::Select;
-use JSON::PP;
+use Cpanel::JSON::XS;
 use POSIX       qw{WNOHANG};
 use Time::HiRes qw{time};
 
@@ -67,7 +69,7 @@ sub new {
     for my $req (qw{corpus script config}) {
         die "$req is required" unless $args{$req};
     }
-    die "No such configuration file $args{config}" unless -f $args{config};
+    $args{cfg} = Config::Simple->new( $args{config} ) or die "Could not read configuration file $args{config}: " . Config::Simple->error() . "\n";
     return bless( \%args, $class );
 }
 
@@ -143,7 +145,7 @@ sub run {
 # The configurations to run: the whole thing, or one per recipe
 sub _configs {
     my ( $self, $each ) = @_;
-    my $cfg     = Config::Simple->new( $self->{config} ) or die Config::Simple->error();
+    my $cfg     = $self->{cfg};
     my @recipes = sort grep { $_ ne 'service' } $cfg->get_block();
     die "No recipes configured in $self->{config}.  Note that a recipe section needs at least one key (e.g. action=reject) to be seen.\n" unless @recipes;
 
@@ -177,14 +179,14 @@ sub _describe_recipes {
     my @recipes = @_;
     my %desc;
     foreach my $recipe (@recipes) {
-        my ($file) = grep { -f } map { "$_/Milter/Recipe/$recipe.pm" } grep { !ref } @INC;
+        my ($file) = grep { -e } map { "$_/Milter/Recipe/$recipe.pm" } grep { !ref } @INC;
         $desc{$recipe} = $file
           ? sha256_hex(
             do { local ( @ARGV, $/ ) = ($file); <> }
           )
           : undef;
     }
-    return JSON::PP->new->canonical->encode( \%desc );
+    return Cpanel::JSON::XS->new->canonical->encode( \%desc );
 }
 
 sub _replay {
@@ -222,7 +224,7 @@ sub _replay {
     }
 
     my $select = IO::Select->new( map { $_->[0] } @readers );
-    my $json   = JSON::PP->new;
+    my $json   = Cpanel::JSON::XS->new;
     my ( $done, @pending ) = (0);
     while ( $select->count() ) {
         foreach my $reader ( $select->can_read(5) ) {
@@ -251,7 +253,7 @@ sub _replay {
 
 sub _worker {
     my ( $milter, $out, $messages, $timeout ) = @_;
-    my $json = JSON::PP->new->canonical;
+    my $json = Cpanel::JSON::XS->new->canonical;
     foreach my $msg (@$messages) {
         my $start  = time;
         my $result = eval { _replay_one( $milter, $msg, $timeout ) } // { code => CLIENT_EOF, action => 'error', reply => "$@" };
@@ -283,7 +285,7 @@ sub _replay_one {
         code          => $code,
         action        => $action // "other",
         reply         => $payload,
-        modifications => ( $mods && @$mods ) ? JSON::PP->new->canonical->encode($mods) : undef,
+        modifications => ( $mods && @$mods ) ? Cpanel::JSON::XS->new->canonical->encode($mods) : undef,
     };
 }
 
@@ -301,7 +303,7 @@ sub commands {
     $body =~ s/(?<!\r)\n/\r\n/g;
 
     my $ip     = $env->{client_ip};
-    my $family = !$ip ? SMFIA_UNKNOWN : $ip =~ m/:/ ? SMFIA_INET6 : SMFIA_INET;
+    my $family = !$ip ? SMFIA_UNKNOWN : index( $ip, ':' ) >= 0 ? SMFIA_INET6 : SMFIA_INET;
     my $host   = $env->{client_host} // ( $ip ? "[$ip]" : 'localhost' );
 
     return (

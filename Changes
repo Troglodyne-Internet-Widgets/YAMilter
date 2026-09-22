@@ -1,4 +1,13 @@
 Revision history for Milter-Recipe
 
+1.001 2026-09-22 TEODESIAN
+    - Add yamilter-corpus, Milter::Corpus and Milter::Corpus::Replay, to replay a pile of mail through recipes and report on the verdicts
+    - Add Milter::Harness, to start and stop yamilter for tests
+    - Milter::Client sends one SMFIC_HEADER per header (#1), sends the body raw and in chunks (#2), can report timeouts and EOF (#3), and returns modifications
+    - Milter::Recipe accumulates header values, not only names (#4)
+    - yamilter no longer buffers its log output
+    - Require perl 5.014, and meet the Troglodyne perlcritic policy
+    - README.md is now generated from the Milter::Recipe POD
+
 1.000 2026-06-29 TEODESIAN
     - First release to CPAN

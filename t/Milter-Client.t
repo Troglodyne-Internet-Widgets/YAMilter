@@ -1,9 +1,10 @@
+use 5.014;
 use strict;
-use warnings;
+use warnings FATAL => 'all';
+use re '/aa';
 
 use FindBin::libs;
 use Socket;
-use IO::Handle;
 use Test2::V0;
 use Test2::Plugin::NoWarnings;
 
@@ -54,3 +55,11 @@ is( [ Milter::Client::body_chunks('') ],                                        
 is( [ map { length( $_->[1] ) } Milter::Client::body_chunks( 'x' x ( MILTER_CHUNK_SIZE + 1 ) ) ], [ MILTER_CHUNK_SIZE, 1 ], 'body split at the chunk size' );
 
 done_testing();
+
+__END__
+
+=head1 DESCRIPTION
+
+L<Milter::Client> against a scripted fake milter: final replies, modifications, timeouts, hangups and body chunking.
+
+=cut
