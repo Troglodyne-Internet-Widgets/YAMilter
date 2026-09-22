@@ -16,6 +16,11 @@ Revision history for Milter-Recipe
     - Recipes' end of message callbacks now run; the default accept used to run first and pre-empt them
     - The accumulated header and body start afresh for each message on a connection
     - Recipe configuration includes no_accum, as documented
+    - Add service.decision_log, a line per recipe decision keyed by the MTA's queue id
+    - Milter::Client sends macros
+    - yamilter-corpus records which recipe decided each message, and shows it in summary, replies, diff and show
+    - Add yamilter-corpus ignore, to leave known mail out of every report
+    - Reports say which runs and recipes they cover, and what the ignore rules left out; the headers report's columns say what they are shares of
 
 1.000 2026-06-29 TEODESIAN
     - First release to CPAN

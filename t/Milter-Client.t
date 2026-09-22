@@ -51,6 +51,28 @@ is( [ converse( undef, [SMFIR_CONTINUE], @cmds ) ], [ SMFIR_CONTINUE, undef, [] 
 
 is( [ converse( { timeout => 0.2 }, [ SMFIR_CONTINUE, undef, SMFIR_ACCEPT ], [SMFIC_EOH], [SMFIC_QUIT], [SMFIC_BODYEOB] ) ], [ SMFIR_ACCEPT, '', [] ], 'no reply is waited for after QUIT' );
 
+subtest 'macros' => sub {
+    socketpair( my $client, my $milter, AF_UNIX, SOCK_STREAM, PF_UNSPEC ) or die "socketpair: $!";
+    my $pid = fork() // die "fork: $!";
+    if ( !$pid ) {
+        close $client;
+
+        # Read the macro packet, say nothing, then answer the next command with what the macro held
+        read( $milter, my $len,    4 );
+        read( $milter, my $packet, unpack( 'N', $len ) );
+        my ( $cmd, $for, @pairs ) = unpack( 'A A (Z*)*', $packet );
+        read( $milter, $len,     4 );
+        read( $milter, my $next, unpack( 'N', $len ) );
+        my $reply = SMFIR_REPLYCODE . "550 5.7.1 $cmd $for @pairs\0";
+        syswrite( $milter, pack( 'N a*', length($reply), $reply ) );
+        exit 0;
+    }
+    close $milter;
+    my @res = Milter::Client::sendmail( $client, { timeout => 0.5 }, [ SMFIC_MACRO, SMFIC_MAIL, i => 'Q1', j => 'host' ], [SMFIC_EOH] );
+    waitpid( $pid, 0 );
+    is( [ @res[ 0, 1 ] ], [ SMFIR_REPLYCODE, '550 5.7.1 D M i Q1 j host' ], 'a macro packs its command and name/value pairs, and no reply is waited for' );
+};
+
 is( [ Milter::Client::body_chunks('') ],                                                          [],                       'empty body, no chunks' );
 is( [ map { length( $_->[1] ) } Milter::Client::body_chunks( 'x' x ( MILTER_CHUNK_SIZE + 1 ) ) ], [ MILTER_CHUNK_SIZE, 1 ], 'body split at the chunk size' );
 

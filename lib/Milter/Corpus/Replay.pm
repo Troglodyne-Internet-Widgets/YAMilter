@@ -36,6 +36,7 @@ OPTNEG, CONNECT (with the client address from the message's Received headers), H
 one HEADER per header, EOH, the body in chunks (with bare LF turned into CRLF, as on the wire), and end of message.
 
 Each message gets a fresh connection.
+yamilter writes a decision_log for the run, which is how each result records the recipe which decided it.
 The first reply which is not CONTINUE is recorded as the verdict, mapped to one of these actions:
 accept, reject, tempfail, discard, quarantine, timeout (the milter said nothing in time) or error (the milter hung up, or the message could not be read).
 Reaching the end of the message with nothing but CONTINUE counts as accept, as that is what an MTA would do.
@@ -47,6 +48,9 @@ Only C<order> is kept, less any recipe a run leaves out.
 
 # 0x1FF: every action a v6 MTA can offer.  0x1FFFFF: every protocol step.
 my @OPTNEG = ( SMFIC_OPTNEG, 6, 0x1FF, 0x1FFFFF );
+
+# Replayed messages get this and their id as the MTA queue id ({i} macro), so the decision_log can be tied back to them
+my $QUEUE_ID_PREFIX = 'yamilter-corpus-';
 
 my %ACTION = (
     SMFIR_ACCEPT()   => 'accept',
@@ -205,9 +209,10 @@ sub _replay {
     open( my $fh, '>', $file ) or die "Could not write $file: $!";
     print $fh _ini(
         service => {
-            sock    => "$dir/yamilter.sock",
-            pidfile => "$dir/yamilter.pid",
-            workers => $opts->{jobs},
+            sock         => "$dir/yamilter.sock",
+            pidfile      => "$dir/yamilter.pid",
+            workers      => $opts->{jobs},
+            decision_log => "$dir/decisions.log",
             ( length $cfg->{order} ? ( order => $cfg->{order} ) : () ),
         },
     );
@@ -257,7 +262,23 @@ sub _replay {
     $self->{corpus}->record_results( $run, @pending ) if @pending;
     waitpid( $_->[1], 0 ) for @readers;
 
-    return $milter->stop();
+    my $log = $milter->stop();
+    $self->{corpus}->record_recipes( $run, _decisions("$dir/decisions.log") );
+    return $log;
+}
+
+# Which recipe decided each message, from the milter's decision_log: message id => recipe
+sub _decisions {
+    my ($file) = @_;
+    open( my $fh, '<', $file ) or return {};
+    my %recipe;
+    while ( my $line = <$fh> ) {
+        chomp $line;
+        my ( undef, $queue_id, $recipe ) = split( qr/\t/, $line );
+        my ($id) = ( $queue_id // '' ) =~ m/\A\Q$QUEUE_ID_PREFIX\E(\d+)\z/ or next;
+        $recipe{$id} = $recipe;
+    }
+    return \%recipe;
 }
 
 sub _worker {
@@ -279,7 +300,7 @@ sub _replay_one {
     return { code => CLIENT_EOF, action => 'error', reply => "Could not read $msg->{path}" } unless defined $raw;
 
     my $sock = $milter->connect();
-    my ( $code, $payload, $mods ) = Milter::Client::sendmail( $sock, { timeout => $timeout }, commands( $raw, $msg ) );
+    my ( $code, $payload, $mods ) = Milter::Client::sendmail( $sock, { timeout => $timeout }, commands( $raw, $msg, "$QUEUE_ID_PREFIX$msg->{id}" ) );
     close $sock;
 
     my $action = $ACTION{$code};
@@ -300,14 +321,15 @@ sub _replay_one {
 
 =head1 FUNCTIONS
 
-=head2 @commands = commands($raw, \%envelope)
+=head2 @commands = commands($raw, \%envelope, [$queue_id])
 
 The milter conversation an MTA would have for a message, given its raw content and envelope (as from L<Milter::Corpus/messages>).
+With C<$queue_id>, it is sent as the C<{i}> macro before MAIL FROM, as postfix does.
 
 =cut
 
 sub commands {
-    my ( $raw,    $env )  = @_;
+    my ( $raw, $env, $queue_id ) = @_;
     my ( $fields, $body ) = split_message($raw);
     $body =~ s/(?<!\r)\n/\r\n/g;
 
@@ -318,9 +340,10 @@ sub commands {
     return (
         [@OPTNEG],
         [ SMFIC_CONNECT, $host, $family, 25, $ip // '' ],
-        [ SMFIC_HELO,    $env->{helo} // 'unknown' ],
-        [ SMFIC_MAIL,    '<' . ( $env->{mail_from} // '' ) . '>' ],
-        [ SMFIC_RCPT,    '<' . ( $env->{rcpt_to}   // '' ) . '>' ],
+        [ SMFIC_HELO, $env->{helo} // 'unknown' ],
+        ( defined $queue_id ? [ SMFIC_MACRO, SMFIC_MAIL, i => $queue_id ] : () ),
+        [ SMFIC_MAIL, '<' . ( $env->{mail_from} // '' ) . '>' ],
+        [ SMFIC_RCPT, '<' . ( $env->{rcpt_to}   // '' ) . '>' ],
         [SMFIC_DATA],
         ( map { [ SMFIC_HEADER, @$_ ] } @$fields ),
         [SMFIC_EOH],

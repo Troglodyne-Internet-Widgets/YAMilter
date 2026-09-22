@@ -26,6 +26,7 @@ use Milter::Corpus::Replay;
     yamilter-corpus report [--db corpus.db] [REPORT] [--run ID | --batch ID] [--verdict accept|blocked|error]
                            [--header NAME] [--limit N] [--tsv]
     yamilter-corpus report [--db corpus.db] diff RUN_ID RUN_ID
+    yamilter-corpus ignore [--db corpus.db] [--folder GLOB | --header NAME [--value GLOB] | --remove ID]
     yamilter-corpus show   [--db corpus.db] MESSAGE_ID
     yamilter-corpus export [--db corpus.db] --to /path/to/Maildir [--run ID | --batch ID] [--verdict accept]
 
@@ -77,9 +78,23 @@ Without a report name, prints the summary.  The reports are:
 
 C<--verdict> defaults to C<accept>, i.e. the mail which got through.
 
+=item C<ignore>
+
+Leave mail you already know about out of every report, so what is left is what nobody has caught yet.
+The rules are kept in the database, so they apply to every report until removed.
+
+    yamilter-corpus ignore --folder '.INBOX.*'                  # sorted into subfolders, known good
+    yamilter-corpus ignore --header X-Spam-Flag --value 'YES'   # already caught by SpamAssassin
+    yamilter-corpus ignore                                      # list the rules
+    yamilter-corpus ignore --remove 2
+
+C<--folder> is a glob against folder names as the reports show them.
+C<--header> leaves out mail with that header, or with C<--value>, mail where it matches the glob (without regard to case).
+Ignored mail is still indexed and replayed; only the reports leave it out.
+
 =item C<show>
 
-Print a message as indexed, followed by its verdict in every run.
+Print a message as indexed, followed by its verdict in every run, and the recipe which decided it.
 
 =item C<export>
 
@@ -100,7 +115,7 @@ sub main {
     GetOptionsFromArray(
         \@args, \%opts,
         qw{db=s source=s@ config=s label=s each folder=s limit=i jobs=i timeout=f yamilter=s},
-        qw{run=i batch=i verdict=s header=s tsv to=s},
+        qw{run=i batch=i verdict=s header=s tsv to=s value=s remove=i},
         'help',
     ) or return _pod2usage(2);
 
@@ -111,6 +126,7 @@ sub main {
         run    => \&cmd_run,
         report => \&cmd_report,
         show   => \&cmd_show,
+        ignore => \&cmd_ignore,
         export => \&cmd_export,
     );
     my $sub = $commands{$cmd} or return _pod2usage( 2, "Unknown command '$cmd'" );
@@ -167,6 +183,7 @@ sub cmd_run {
     print STDERR "\n";
     print "Recorded run(s): @runs\n";
 
+    print_caption( $opts->{tsv}, $corpus->describe( 'summary', batch => $runs[0] ) );
     my ( $cols, $rows ) = $corpus->report( 'summary', batch => $runs[0] );
     print_table( $cols, $rows, $opts->{tsv} );
     return 0;
@@ -175,13 +192,32 @@ sub cmd_run {
 sub cmd_report {
     my ( $corpus, $opts, $name, @rest ) = @_;
     $name //= 'summary';
-    my ( $cols, $rows ) = $corpus->report(
-        $name,
-        %$opts{qw{run batch limit verdict header}},
-        runs => \@rest,
-    );
+    my %args = ( %$opts{qw{run batch limit verdict header}}, runs => \@rest );
+    my ( $cols, $rows ) = $corpus->report( $name, %args );
+    print_caption( $opts->{tsv}, $corpus->describe( $name, %args ) );
     print_table( $cols, $rows, $opts->{tsv} );
     return 0;
+}
+
+sub cmd_ignore {
+    my ( $corpus, $opts ) = @_;
+    if ( $opts->{remove} ) {
+        die "No ignore rule $opts->{remove}\n" unless $corpus->remove_ignore( $opts->{remove} );
+    }
+    elsif ( defined $opts->{folder} || defined $opts->{header} ) {
+        $corpus->add_ignore( %$opts{ grep { defined $opts->{$_} } qw{folder header value} } );
+    }
+    print_table( $corpus->ignores() );
+    return 0;
+}
+
+# What a report is about, above it; left out of --tsv, which is for other programs to read
+sub print_caption {
+    my ( $tsv, @lines ) = @_;
+    return if $tsv;
+    print "$_\n" for @lines;
+    print "\n";
+    return;
 }
 
 sub cmd_show {
@@ -191,9 +227,9 @@ sub cmd_show {
     print $raw;
     print "\n", '-' x 72, "\n";
 
-    print_table( $corpus->query( 'SELECT folder, path, flags FROM locations WHERE message_id = ?',                                                                                   $id ) );
-    print_table( $corpus->query( 'SELECT mail_from, rcpt_to, helo, client_ip, client_host, derived FROM envelope WHERE message_id = ?',                                              $id ) );
-    print_table( $corpus->query( 'SELECT r.run_id, u.label, r.action, r.reply, r.elapsed_ms FROM results r JOIN runs u ON u.id = r.run_id WHERE r.message_id = ? ORDER BY r.run_id', $id ) );
+    print_table( $corpus->query( 'SELECT folder, path, flags FROM locations WHERE message_id = ?',                                                                                             $id ) );
+    print_table( $corpus->query( 'SELECT mail_from, rcpt_to, helo, client_ip, client_host, derived FROM envelope WHERE message_id = ?',                                                        $id ) );
+    print_table( $corpus->query( 'SELECT r.run_id, u.label, r.action, r.recipe, r.reply, r.elapsed_ms FROM results r JOIN runs u ON u.id = r.run_id WHERE r.message_id = ? ORDER BY r.run_id', $id ) );
     return 0;
 }
 

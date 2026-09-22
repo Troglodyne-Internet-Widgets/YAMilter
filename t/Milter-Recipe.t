@@ -73,15 +73,16 @@ sub converse {
     }
     local @INC = ( "$tmp/lib", @INC );
 
-    my $cfg    = write_file( "$tmp/yamilter.cfg", "[service]\nsock=$tmp/yamilter.sock\npidfile=$tmp/yamilter.pid\nworkers=1\n$service" . join( '', map { "[$_]\naction=reject\n" } sort keys %$recipes ) );
+    my $cfg    = write_file( "$tmp/yamilter.cfg", "[service]\nsock=$tmp/yamilter.sock\npidfile=$tmp/yamilter.pid\nworkers=1\ndecision_log=$tmp/decisions.log\n$service" . join( '', map { "[$_]\naction=reject\n" } sort keys %$recipes ) );
     my $milter = Milter::Harness->new( script => "$FindBin::Bin/../bin/yamilter", config => $cfg );
-    my $out    = eval { $milter->start(); 1 } ? undef : $@;
-    return ( undef, undef, $out ) if $out;
+    my $failed = eval { $milter->start(); 1 } ? undef : $@;
+    return ( undef, undef, $failed ) if $failed;
     my ( $code, $reply ) = Milter::Client::sendmail(
         $milter->connect(),
         { timeout => 5 },
         [ SMFIC_OPTNEG, 6, 0x1FF, 0x1FFFFF ],
         [ SMFIC_HELO,   'client.test.test' ],
+        [ SMFIC_MACRO,  SMFIC_MAIL, i => 'QUEUE1' ],
         [ SMFIC_MAIL,   '<a@test.test>' ],
         [ SMFIC_RCPT,   '<b@test.test>' ],
         [SMFIC_DATA],
@@ -91,7 +92,12 @@ sub converse {
         [SMFIC_BODYEOB],
         [SMFIC_QUIT],
     );
-    return ( $code, $reply, $milter->stop() );
+    my $out = $milter->stop();
+    my @decisions;
+    if ( open( my $fh, '<', "$tmp/decisions.log" ) ) {
+        @decisions = map { chomp; [ ( split qr/\t/ )[ 1 .. 4 ] ] } <$fh>;
+    }
+    return ( $code, $reply, $out, \@decisions );
 }
 
 subtest 'order and end of message, in yamilter' => sub {
@@ -99,11 +105,13 @@ subtest 'order and end of message, in yamilter' => sub {
         Accepts => 'eoh => sub { __PACKAGE__->accept() }',
         Rejects => 'eoh => sub { __PACKAGE__->config_reply( $_[0], "no" ) }',
     );
-    my ( $code, $reply, $log ) = converse( "order=Accepts\n", \%recipes );
-    is( $code, SMFIR_ACCEPT, 'a recipe ordered first can accept before the others see the message' ) or diag($log);
+    my ( $code, $reply, $log, $decisions ) = converse( "order=Accepts\n", \%recipes );
+    is( $code,      SMFIR_ACCEPT,                        'a recipe ordered first can accept before the others see the message' ) or diag($log);
+    is( $decisions, [ [qw{QUEUE1 Accepts eoh ACCEPT}] ], 'the decision_log records the queue id, recipe, callback and result' );
 
-    ( $code, $reply, $log ) = converse( "order=Rejects\n", \%recipes );
+    ( $code, $reply, $log, $decisions ) = converse( "order=Rejects\n", \%recipes );
     is( [ $code, $reply ], [ SMFIR_REPLYCODE, '550 5.7.1 no' ], 'and ordered second, it never gets the chance' ) or diag($log);
+    is( $decisions,        [ [qw{QUEUE1 Rejects eoh REJECT}] ], '... for a reject too' );
 
     ( $code, $reply, $log ) = converse( '', { AtTheEnd => 'eom => sub { __PACKAGE__->config_reply( $_[0], "not at the end either" ) }' } );
     is( [ $code, $reply ], [ SMFIR_REPLYCODE, '550 5.7.1 not at the end either' ], 'a recipe\'s end of message callback runs before the default accept' ) or diag($log);

@@ -55,6 +55,10 @@ It is written to refer to F</etc/yamilter.cfg> as the config file.
 The C<service> section above allows configuration of where the PID/Socket files live, and how many workers to run.
 The values above, apart from C<order>, are the defaults if you omit these parameters.
 
+C<decision_log> names a file to append a line to for every decision a recipe makes (anything but continue):
+the time, the MTA's queue id (the C<{i}> macro, which postfix sends), the recipe, the callback, and the result, separated by tabs.
+Off unless set.  C<yamilter-corpus> uses it to record which recipe decided each message.
+
 C<order> sets the order recipes run in, which matters when one can accept a message outright (see L<Milter::Recipe::MailingList>),
 since that ends milter processing for the message.
 Recipes it does not name run after those it does, alphabetically; by default that is all of them.
@@ -193,6 +197,8 @@ sub new {
         cfile    => $cfile,
         debug    => $config->param('service.debug')    // 0,
         no_accum => $config->param('service.no_accum') // 0,
+
+        decision_log => scalar $config->param('service.decision_log'),
     );
 
     # Set things that callbacks need to be aware of
@@ -513,16 +519,13 @@ sub cb {
     return %full_cb;
 }
 
-# Doing this on purpose to catch bad parses
-no warnings qw{uninitialized};
 my %mr = (
     SMFIS_CONTINUE() => 'CONTINUE',
     SMFIS_TEMPFAIL() => 'TEMPFAIL',
     SMFIS_REJECT()   => 'REJECT',
+    SMFIS_DISCARD()  => 'DISCARD',
     SMFIS_ACCEPT()   => 'ACCEPT',
     SMFIS_MSG_LOOP() => 'HELO LOOP',
-    undef()          => 'UNKNOWN',
-    ''               => 'UNKNOWN',
 );
 
 # Just run everything in order until we short-circuit
@@ -534,14 +537,29 @@ sub _run_callbacks {
         my $cb     = $cbo->[1];
         warn "Running $module $callback callback" if $DEBUG;
         my $res = $cb->(@$args);
-        if ($DEBUG) {
-            no warnings qw{uninitialized};
-            my $res_trans = $mr{$res};
-            warn "Response from callback: $res_trans ($res)" if $DEBUG;
-        }
-        return $res if defined $res && $res ne SMFIS_CONTINUE;
+        warn "Response from callback: " . ( $mr{ $res // '' } // 'UNKNOWN' ) . " (" . ( $res // 'undef' ) . ")" if $DEBUG;
+        next unless defined $res && $res ne SMFIS_CONTINUE;
+        _log_decision( $args->[0], $module, $callback, $res ) if $module ne 'Default';
+        return $res;
     }
     return SMFIS_CONTINUE;
+}
+
+# One line per decision a recipe makes, for service.decision_log
+sub _log_decision {
+    my ( $ctx, $module, $callback, $res ) = @_;
+    my $file     = $singleton && $singleton->{decision_log} or return;
+    my $queue_id = eval { $ctx->getsymval('i') } // '-';
+    ( my $recipe = $module ) =~ s/\AMilter::Recipe:://;
+
+    # Each worker appends a whole line at a time, so their lines do not interleave
+    open( my $fh, '>>', $file ) or do {
+        warn "Could not append to decision_log $file: $!\n";
+        return;
+    };
+    syswrite( $fh, join( "\t", time, $queue_id, $recipe, $callback, $mr{$res} // $res ) . "\n" );
+    close $fh;
+    return;
 }
 
 =head2 loaded_recipes

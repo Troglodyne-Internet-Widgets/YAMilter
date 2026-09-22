@@ -16,6 +16,7 @@ use File::Spec;
 use List::Util qw{any};
 use Mail::Address;
 use Mail::Box::Manager;
+use Cpanel::JSON::XS;
 
 use Exporter 'import';
 our @EXPORT_OK = qw{split_message};
@@ -65,6 +66,11 @@ C<derived> lists the fields which had to be guessed from the From/To headers rat
 
 One C<runs> row per replay, one C<results> row per message per replay.
 Runs made together by C<--each> share a C<batch>.
+C<results.recipe> is the recipe which decided the message, when one did (see C<decision_log> in L<Milter::Recipe>).
+
+=item C<ignores>
+
+Rules leaving mail out of every report (see C<add_ignore> below): a C<folder> glob, or a C<header> name and optional C<value> glob.
 
 =back
 
@@ -72,6 +78,10 @@ The reports in L</REPORTS> are views, which can be queried the same way.
 Every view about verdicts has a C<scope> column (C<batch> or C<run>) and a C<scope_id> column (the batch or run id), so pick one with, for example, C<WHERE scope = 'batch' AND scope_id = 3>.
 
 =over 4
+
+=item C<ignored_messages>
+
+The ids of the messages the C<ignores> rules leave out.  Every view below leaves them out too.
 
 =item C<verdicts>
 
@@ -175,9 +185,17 @@ my @SCHEMA = (
         reply         TEXT,
         modifications TEXT,
         elapsed_ms    INTEGER,
+        recipe        TEXT,
         PRIMARY KEY (run_id, message_id)
     ) WITHOUT ROWID},
     q{CREATE INDEX IF NOT EXISTS results_action ON results(run_id, action)},
+    q{CREATE TABLE IF NOT EXISTS ignores (
+        id     INTEGER PRIMARY KEY,
+        folder TEXT,
+        header TEXT,
+        value  TEXT,
+        CHECK ( (folder IS NULL) != (header IS NULL) )
+    )},
 );
 
 # The canned reports, as views anyone can query from sqlite3 too.  They are recreated on every connect, so they always match this code.
@@ -191,6 +209,7 @@ my %VIEWS = (
                     WHEN SUM(r.action != 'accept') > 0 THEN 'error'
                     ELSE 'accept' END AS verdict
         FROM results r JOIN runs u ON u.id = r.run_id
+        WHERE r.message_id NOT IN (SELECT message_id FROM ignored_messages)
         GROUP BY u.batch, r.message_id
         UNION ALL
         SELECT 'run', r.run_id, r.message_id,
@@ -198,6 +217,15 @@ my %VIEWS = (
                     WHEN r.action != 'accept' THEN 'error'
                     ELSE 'accept' END
         FROM results r
+        WHERE r.message_id NOT IN (SELECT message_id FROM ignored_messages)
+    },
+
+    # Messages the ignore rules leave out of every report
+    ignored_messages => q{
+        SELECT l.message_id FROM ignores i JOIN locations l ON l.folder GLOB i.folder WHERE i.folder IS NOT NULL
+        UNION
+        SELECT h.message_id FROM ignores i JOIN headers h ON h.name = i.header AND lower(COALESCE(h.decoded, h.value)) GLOB lower(COALESCE(i.value, '*'))
+        WHERE i.header IS NOT NULL
     },
     message_summary => q{
         SELECT m.id AS message_id,
@@ -210,9 +238,10 @@ my %VIEWS = (
         SELECT scope, scope_id, verdict, COUNT(*) AS messages FROM verdicts GROUP BY scope, scope_id, verdict
     },
     run_actions => q{
-        SELECT u.batch, r.run_id, u.label, r.action, COUNT(*) AS messages
+        SELECT u.batch, r.run_id, u.label, r.action, r.recipe, COUNT(*) AS messages
         FROM results r JOIN runs u ON u.id = r.run_id
-        GROUP BY u.batch, r.run_id, r.action
+        WHERE r.message_id NOT IN (SELECT message_id FROM ignored_messages)
+        GROUP BY u.batch, r.run_id, r.action, r.recipe
     },
     folder_verdicts => q{
         SELECT v.scope, v.scope_id, l.folder, COUNT(DISTINCT v.message_id) AS messages,
@@ -259,30 +288,33 @@ my %VIEWS = (
         GROUP BY v.scope, v.scope_id, v.verdict, e.client_ip
     },
     reply_counts => q{
-        SELECT 'batch' AS scope, u.batch AS scope_id, r.action, r.reply, COUNT(*) AS messages
+        SELECT 'batch' AS scope, u.batch AS scope_id, r.recipe, r.action, r.reply, COUNT(*) AS messages
         FROM results r JOIN runs u ON u.id = r.run_id
-        WHERE r.action != 'accept'
-        GROUP BY u.batch, r.action, r.reply
+        WHERE r.action != 'accept' AND r.message_id NOT IN (SELECT message_id FROM ignored_messages)
+        GROUP BY u.batch, r.recipe, r.action, r.reply
         UNION ALL
-        SELECT 'run', r.run_id, r.action, r.reply, COUNT(*)
+        SELECT 'run', r.run_id, r.recipe, r.action, r.reply, COUNT(*)
         FROM results r
-        WHERE r.action != 'accept'
-        GROUP BY r.run_id, r.action, r.reply
+        WHERE r.action != 'accept' AND r.message_id NOT IN (SELECT message_id FROM ignored_messages)
+        GROUP BY r.run_id, r.recipe, r.action, r.reply
     },
     verdict_list => q{
         SELECT v.scope, v.scope_id, v.verdict, v.message_id AS id, s.folder, s."from", s.subject
         FROM verdicts v JOIN message_summary s ON s.message_id = v.message_id
     },
     action_changes => q{
-        SELECT a.run_id AS before_run, b.run_id AS after_run, a.message_id AS id, s.folder, s.subject, a.action AS before, b.action AS after, b.reply
+        SELECT a.run_id AS before_run, b.run_id AS after_run, a.message_id AS id, s.folder, s.subject, a.action AS before, b.action AS after, b.recipe, b.reply
         FROM results a
         JOIN results b ON b.message_id = a.message_id AND b.action != a.action
         JOIN message_summary s ON s.message_id = a.message_id
+        WHERE a.message_id NOT IN (SELECT message_id FROM ignored_messages)
     },
 );
 
 # Views which others are built on must be created first
-my @VIEW_ORDER = ( qw{verdicts message_summary verdict_counts}, grep { !m/^(?:verdicts|message_summary|verdict_counts)\z/ } sort keys %VIEWS );
+my @FIRST_VIEWS = qw{ignored_messages verdicts message_summary verdict_counts};
+my %FIRST_VIEW  = map { $_ => 1 } @FIRST_VIEWS;
+my @VIEW_ORDER  = ( @FIRST_VIEWS, grep { !$FIRST_VIEW{$_} } sort keys %VIEWS );
 
 # Commit this often while indexing, so an interrupted index keeps most of its work
 my $COMMIT_EVERY = 1000;
@@ -315,6 +347,10 @@ sub new {
     $dbh->do('PRAGMA synchronous = NORMAL');
     $dbh->do('PRAGMA foreign_keys = ON');
     $dbh->do($_) for @SCHEMA;
+
+    # Databases made before results recorded the deciding recipe
+    my %results = map { $_->[1] => 1 } @{ $dbh->selectall_arrayref('PRAGMA table_info(results)') };
+    $dbh->do('ALTER TABLE results ADD COLUMN recipe TEXT') unless $results{recipe};
 
     # View names and bodies are the constants in %VIEWS; identifiers cannot be bound
     $dbh->do("DROP VIEW IF EXISTS $_")       for reverse @VIEW_ORDER;    ## no critic (ValuesAndExpressions::PreventSQLInjection)
@@ -810,6 +846,22 @@ sub record_results {
     return scalar(@results);
 }
 
+=head2 record_recipes($run_id, \%recipe_by_message_id)
+
+Record which recipe decided each message in a run.  Messages no recipe decided (they got the default accept) are left alone.
+
+=cut
+
+sub record_recipes {
+    my ( $self, $run, $recipes ) = @_;
+    my $dbh = $self->dbh();
+    my $sth = $dbh->prepare_cached('UPDATE results SET recipe = ? WHERE run_id = ? AND message_id = ?');
+    $dbh->begin_work();
+    $sth->execute( $recipes->{$_}, $run, $_ ) for keys %$recipes;
+    $dbh->commit();
+    return scalar( keys %$recipes );
+}
+
 =head2 finish_run($run_id, $milter_log)
 
 =cut
@@ -827,10 +879,10 @@ my %REPORTS = (
     senders => { view => 'sender_domains',  columns => [qw{domain messages}],                verdict => 1 },
     helo    => { view => 'helo_names',      columns => [qw{helo messages}],                  verdict => 1 },
     ips     => { view => 'client_ips',      columns => [qw{client_ip client_host messages}], verdict => 1 },
-    replies => { view => 'reply_counts',    columns => [qw{action reply messages}] },
+    replies => { view => 'reply_counts',    columns => [qw{recipe action reply messages}] },
     list    => { view => 'verdict_list',    columns => [ qw{id folder}, '"from"', 'subject' ], verdict => 1, order => 'id' },
 );
-my %VERDICTS = map { $_ => 1 } qw{accept blocked error};
+my %VERDICTS = ( accept => 'accepted', blocked => 'blocked', error => 'errors' );
 
 =head1 REPORTS
 
@@ -897,7 +949,7 @@ sub report {
 
     if ( $name eq 'diff' ) {
         die "diff needs two run ids\n" unless ref $opts{runs} eq 'ARRAY' && @{ $opts{runs} } == 2;
-        return $self->query( 'SELECT id, folder, subject, before, after, reply FROM action_changes WHERE before_run = ? AND after_run = ? ORDER BY id LIMIT ?', @{ $opts{runs} }, $opts{limit} );
+        return $self->query( 'SELECT id, folder, subject, before, after, recipe, reply FROM action_changes WHERE before_run = ? AND after_run = ? ORDER BY id LIMIT ?', @{ $opts{runs} }, $opts{limit} );
     }
 
     my ( $scope, $scope_id ) = $self->_scope(%opts);
@@ -905,19 +957,21 @@ sub report {
 
     if ( $name eq 'summary' ) {
         return $self->query(
-            q{SELECT 'batch' AS run, NULL AS label, verdict AS action, messages FROM verdict_counts WHERE scope = ? AND scope_id = ?
+            q{SELECT 'batch' AS run, NULL AS label, verdict AS action, NULL AS recipe, messages FROM verdict_counts WHERE scope = ? AND scope_id = ?
               UNION ALL
-              SELECT run_id, label, action, messages FROM run_actions WHERE } . ( $scope eq 'batch' ? 'batch' : 'run_id' ) . ' = ?',
+              SELECT run_id, label, action, recipe, messages FROM run_actions WHERE } . ( $scope eq 'batch' ? 'batch' : 'run_id' ) . ' = ?',
             $scope, $scope_id, $scope_id
         );
     }
 
     if ( $name eq 'headers' ) {
 
-        # The verdict names a column, and has been checked against %VERDICTS above; identifiers cannot be bound
-        my $v = $opts{verdict};
+        # Verdicts name columns, and have been checked against %VERDICTS above; identifiers cannot be bound
+        my $v     = $opts{verdict};
+        my $other = $v eq 'blocked' ? 'accept' : 'blocked';
         return $self->query(    ## no critic (ValuesAndExpressions::PreventSQLInjection)
-            "SELECT name, $v AS messages, pct_$v AS pct, pct_blocked FROM header_rates WHERE scope = ? AND scope_id = ? AND $v > 0 ORDER BY $v DESC, name LIMIT ?", $scope, $scope_id, $opts{limit}
+            "SELECT name AS header, $v AS messages, pct_$v AS pct_of_$VERDICTS{$v}, pct_$other AS pct_of_$VERDICTS{$other} FROM header_rates WHERE scope = ? AND scope_id = ? AND $v > 0 ORDER BY $v DESC, name LIMIT ?",
+            $scope, $scope_id, $opts{limit}
         );
     }
 
@@ -936,6 +990,95 @@ sub report {
     }
     my $sql = sprintf( 'SELECT %s FROM %s WHERE %s ORDER BY %s LIMIT ?', join( ', ', @{ $report->{columns} } ), $report->{view}, join( ' AND ', @where ), $report->{order} // 'messages DESC' );
     return $self->query( $sql, @bind, $opts{limit} );
+}
+
+=head2 @lines = describe($name, %opts)
+
+What a report with the same options is about, in words: the runs and their recipes, how many messages the ignore rules leave out,
+the verdicts of the rest, and which of them the report shows.
+
+=cut
+
+sub describe {
+    my ( $self, $name, %opts ) = @_;
+    my $dbh = $self->dbh();
+
+    my $runs = sub {
+        my @ids = @_;
+        return join(
+            '; ',
+            map {
+                my ( $label, $recipes ) = $dbh->selectrow_array( 'SELECT label, recipes FROM runs WHERE id = ?', undef, $_ );
+                my $names = join( ', ', sort keys %{ Cpanel::JSON::XS->new->decode( $recipes // '{}' ) } );
+                "run $_" . ( length( $label // '' ) ? qq{ "$label"} : '' ) . " ($names)";
+            } @ids
+        );
+    };
+    my ($ignored) = $dbh->selectrow_array('SELECT COUNT(*) FROM (SELECT message_id FROM ignored_messages)');
+    my ($rules)   = $dbh->selectrow_array('SELECT COUNT(*) FROM ignores');
+    my $left_out  = $rules ? "$ignored messages left out by $rules ignore rule" . ( $rules == 1 ? '' : 's' ) : 'no ignore rules';
+
+    if ( $name eq 'diff' ) {
+        return ( 'Changes from ' . $runs->( $opts{runs}[0] ) . ' to ' . $runs->( $opts{runs}[1] ), ucfirst($left_out) );
+    }
+
+    my ( $scope, $scope_id ) = $self->_scope(%opts);
+    return ('No runs yet') unless $scope_id;
+    my @ids   = $scope eq 'run' ? ($scope_id) : @{ $dbh->selectcol_arrayref( 'SELECT id FROM runs WHERE batch = ? ORDER BY id', undef, $scope_id ) };
+    my %count = map { @$_ } @{ $dbh->selectall_arrayref( 'SELECT verdict, messages FROM verdict_counts WHERE scope = ? AND scope_id = ?', undef, $scope, $scope_id ) };
+    my $total = 0;
+    $total += $_ for values %count;
+
+    my @lines = (
+        ucfirst($scope) . " $scope_id: " . $runs->(@ids),
+        ucfirst($left_out) . "; of the $total others, " . join( ', ', map { ( $count{$_} // 0 ) . " $VERDICTS{$_}" } qw{accept blocked error} ),
+    );
+    push @lines, "Showing the $VERDICTS{ $opts{verdict} || 'accept' } mail" if $name eq 'headers' || ( $REPORTS{$name} && $REPORTS{$name}{verdict} );
+    return @lines;
+}
+
+=head2 add_ignore( folder => $glob ) or add_ignore( header => $name, [value => $glob] )
+
+Leave messages out of every report: those with a location in a folder matching C<$glob>,
+or with a header C<$name> (any value, or one matching C<$glob>, compared without case and after decoding).
+Ignored messages are still indexed and replayed.  Returns the rule's id.
+
+=cut
+
+sub add_ignore {
+    my ( $self, %rule ) = @_;
+    die "An ignore rule needs a folder or a header, not both\n" unless defined( $rule{folder} ) xor defined( $rule{header} );
+    die "A value only goes with a header\n" if defined $rule{value} && !defined $rule{header};
+    $self->dbh->do( 'INSERT INTO ignores (folder, header, value) VALUES (?, ?, ?)', undef, $rule{folder}, ( defined $rule{header} ? lc $rule{header} : undef ), $rule{value} );
+    return $self->dbh->last_insert_id( '', '', 'ignores', 'id' );
+}
+
+=head2 ($columns, $rows) = ignores()
+
+The ignore rules, with how many messages each leaves out.
+
+=cut
+
+sub ignores {
+    my ($self) = @_;
+    return $self->query(
+        q{SELECT i.id, i.folder, i.header, i.value,
+                 CASE WHEN i.folder IS NOT NULL
+                      THEN (SELECT COUNT(DISTINCT message_id) FROM locations WHERE folder GLOB i.folder)
+                      ELSE (SELECT COUNT(DISTINCT message_id) FROM headers WHERE name = i.header AND lower(COALESCE(decoded, value)) GLOB lower(COALESCE(i.value, '*'))) END AS messages
+          FROM ignores i ORDER BY i.id}
+    );
+}
+
+=head2 remove_ignore($id)
+
+Returns true if there was such a rule.
+
+=cut
+
+sub remove_ignore {
+    my ( $self, $id ) = @_;
+    return $self->dbh->do( 'DELETE FROM ignores WHERE id = ?', undef, $id ) > 0;
 }
 
 # Which verdicts a report is about: the run asked for, the batch asked for, or the latest batch
