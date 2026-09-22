@@ -103,11 +103,12 @@ subtest 'reports' => sub {
 
     my $first = $corpus->start_run( label => 'one', config => '', recipes => '{}' );
     $record->( $first, 'Ihre Bestellung' => 'tempfail' );
-    my $second = $corpus->start_run( label => 'two', batch => $first, config => '', recipes => '{}' );
+    my $second = $corpus->start_run( label => 'two', batch => $first, config => '', recipes => '{"Deals":null}' );
     $record->( $second, $deals => 'reject', 'Trash two' => 'timeout' );
+    is( $corpus->record_recipes( $second, { $id{$deals} => 'Deals' } ), 1, 'record_recipes' );
 
     my ( $cols, $rows ) = $corpus->report('summary');
-    my %batch = map { $_->[2] => $_->[3] } grep { $_->[0] eq 'batch' } @$rows;
+    my %batch = map { $_->[2] => $_->[4] } grep { $_->[0] eq 'batch' } @$rows;
     is( \%batch, { accept => 2, blocked => 2, error => 1 }, 'a batch blocks what any run blocked, and errors what any run could not finish' );
 
     ( undef, $rows ) = $corpus->query( q{SELECT verdict, messages FROM verdict_counts WHERE scope = 'batch' AND scope_id = ? ORDER BY verdict}, $first );
@@ -115,10 +116,11 @@ subtest 'reports' => sub {
     like( dies { $corpus->report( 'summary', verdict => 'bogus' ) }, qr/No such verdict 'bogus'/, 'unknown verdict dies' );
 
     ( $cols, $rows ) = $corpus->report( 'summary', run => $first );
-    %batch = map { $_->[2] => $_->[3] } grep { $_->[0] eq 'batch' } @$rows;
+    %batch = map { $_->[2] => $_->[4] } grep { $_->[0] eq 'batch' } @$rows;
     is( \%batch, { accept => 4, blocked => 1 }, 'one run on its own' );
 
     ( $cols, $rows ) = $corpus->report( 'headers', limit => 100 );
+    is( $cols, [qw{header messages pct_of_accepted pct_of_blocked}], 'headers columns say what they are shares of' );
     my %headers = map { $_->[0] => $_ } @$rows;
     is( $headers{'return-path'}[1], 2, 'headers counts accepted messages with the header' );
     ok( !$headers{'list-unsubscribe'}, '... and leaves out headers only blocked mail had' );
@@ -135,7 +137,18 @@ subtest 'reports' => sub {
     is( [ map { $_->[0] } @$rows ], ['test.test'], 'senders by domain' );
 
     ( $cols, $rows ) = $corpus->report('replies');
-    is( [ sort map { $_->[1] } @$rows ], [ "no $deals", 'no Ihre Bestellung', 'no Trash two' ], 'replies of everything not accepted' );
+    is( $cols,                                                      [qw{recipe action reply messages}],                    'replies columns' );
+    is( [ sort map { $_->[2] } @$rows ],                            [ "no $deals", 'no Ihre Bestellung', 'no Trash two' ], 'replies of everything not accepted' );
+    is( [ map { $_->[0] } grep { $_->[2] eq "no $deals" } @$rows ], ['Deals'],                                             '... with the recipe which decided, where known' );
+
+    ( $cols, $rows ) = $corpus->report( 'summary', run => $second );
+    is( [ map { [ @$_[ 2, 3, 4 ] ] } grep { $_->[0] eq $second && $_->[2] eq 'reject' } @$rows ], [ [ 'reject', 'Deals', 1 ] ], 'summary counts actions by recipe' );
+
+    is(
+        [ $corpus->describe( 'headers', batch => $first ) ],
+        [ qq{Batch $first: run $first "one" (); run $second "two" (Deals)}, 'No ignore rules; of the 5 others, 2 accepted, 2 blocked, 1 errors', 'Showing the accepted mail' ],
+        'describe says which runs and recipes, what the verdicts were, and which the report shows'
+    );
 
     ( $cols, $rows ) = $corpus->report('list');
     is( $cols,          [qw{id folder from subject}], 'list columns' );
@@ -153,6 +166,28 @@ subtest 'reports' => sub {
     is( scalar( grep { $_->[0] eq $third } @$rows ), 2, 'the latest batch is reported by default' );
 
     is( [ $corpus->verdict_messages( run => $third ) ], [ grep { $_ != $id{'Quarterly report'} } sort { $a <=> $b } values(%id) ], 'verdict_messages gives ids of the accepted mail' );
+
+    subtest 'ignore rules' => sub {
+        like( dies { $corpus->add_ignore( folder => 'x', header => 'y' ) }, qr/a folder or a header, not both/, 'one kind of rule at a time' );
+        like( dies { $corpus->add_ignore( folder => 'x', value  => 'y' ) }, qr/only goes with a header/,        'a value needs a header' );
+
+        my $trash = $corpus->add_ignore( folder => 'Tra*' );
+        my ( undef, $rows ) = $corpus->report( 'summary', run => $third );
+        is( { map { $_->[2] => $_->[4] } grep { $_->[0] eq 'batch' } @$rows }, { accept => 2, blocked => 1 }, 'a folder rule leaves its mail out of the reports' );
+
+        my $german = $corpus->add_ignore( header => 'Subject', value => '*BESTELLUNG*' );
+        ( undef, $rows ) = $corpus->report( 'summary', run => $first );
+        is( { map { $_->[2] => $_->[4] } grep { $_->[0] eq 'batch' } @$rows }, { accept => 2 }, 'a header rule too, matching its value without regard to case' );
+
+        ( undef, $rows ) = $corpus->ignores();
+        is( $rows, [ [ $trash, 'Tra*', undef, undef, 2 ], [ $german, undef, 'subject', '*BESTELLUNG*', 1 ] ], 'ignores lists the rules, and what each leaves out' );
+        like( ( $corpus->describe( 'summary', run => $first ) )[1], qr/^3 messages left out by 2 ignore rules; of the 2 others/, 'describe says how much is left out' );
+
+        ok( $corpus->remove_ignore($_), "remove rule $_" ) for $trash, $german;
+        ok( !$corpus->remove_ignore($trash), 'removing it again says there was no such rule' );
+        ( undef, $rows ) = $corpus->report( 'summary', run => $third );
+        is( { map { $_->[2] => $_->[4] } grep { $_->[0] eq 'batch' } @$rows }, { accept => 4, blocked => 1 }, 'and the reports see everything again' );
+    };
 };
 
 done_testing();

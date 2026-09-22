@@ -47,6 +47,17 @@ like( $out, qr/^Recorded run\(s\): 1$/m, 'run names the run it recorded' );
 is( $exit,                                                              0,                                'report exits 0' );
 is( [ map { ( split qr/\t/ )[3] } grep { length } split qr/\n/, $out ], [ 'subject', 'Ihre Bestellung' ], 'tsv output, header row first' );
 
+( $exit, $out ) = cli( qw{report --db}, $db, 'summary' );
+like( $out, qr/^Batch 1: run 1 \(Language\)\nNo ignore rules; of the 5 others, 4 accepted, 1 blocked, 0 errors\n\n/, 'reports say what they are about' );
+
+( $exit, $out ) = cli( qw{ignore --db}, $db, qw{--folder Trash} );
+like( $out, qr/^1\s+Trash\s+2\s*$/m, 'ignore adds a rule and lists them' );
+( $exit, $out ) = cli( qw{report --db}, $db, 'summary' );
+like( $out, qr/^2 messages left out by 1 ignore rule; of the 3 others/m, '... which the reports then leave out' );
+( $exit, $out ) = cli( qw{ignore --db}, $db, qw{--remove 1} );
+unlike( $out, qr/Trash/, 'ignore --remove takes it away' );
+like( dies { cli( qw{ignore --db}, $db, qw{--remove 1} ) }, qr/No ignore rule 1/, '... once' );
+
 ( $exit, $out ) = cli( 'show', '--db', $db, 1 );
 like( $out, qr/^Subject: /m, 'show prints the message' );
 

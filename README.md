@@ -35,6 +35,7 @@ pidfile=/var/run/yamilter.pid
 sock=/var/run/yamilter.sock
 workers=10
 debug=0
+order=MailingList, EnvelopeMatch
 [Language]
 langs=en, fr, es
 action=discard
@@ -52,7 +53,15 @@ Included in the `service/` directory is a systemd service configuration you can 
 It is written to refer to `/etc/yamilter.cfg` as the config file.
 
 The `service` section above allows configuration of where the PID/Socket files live, and how many workers to run.
-The values above are the defaults if you omit these parameters.
+The values above, apart from `order`, are the defaults if you omit these parameters.
+
+`decision_log` names a file to append a line to for every decision a recipe makes (anything but continue):
+the time, the MTA's queue id (the `{i}` macro, which postfix sends), the recipe, the callback, and the result, separated by tabs.
+Off unless set.  `yamilter-corpus` uses it to record which recipe decided each message.
+
+`order` sets the order recipes run in, which matters when one can accept a message outright (see [Milter::Recipe::MailingList](https://metacpan.org/pod/Milter%3A%3ARecipe%3A%3AMailingList)),
+since that ends milter processing for the message.
+Recipes it does not name run after those it does, alphabetically; by default that is all of them.
 
 You'll likely want to configure chrooted dovecot to have the sock inside its chroot.
 
@@ -77,6 +86,15 @@ and considered sufficient example for other authors to do the same.
 
     Reject mails which are not comprehensible to your userbase.
 
+- [Milter::Recipe::EnvelopeMatch](https://metacpan.org/pod/Milter%3A%3ARecipe%3A%3AEnvelopeMatch)
+
+    Reject mails whose From: is not the envelope sender, or which are not addressed To: or Cc: the envelope recipient.
+
+- [Milter::Recipe::MailingList](https://metacpan.org/pod/Milter%3A%3ARecipe%3A%3AMailingList)
+
+    Reject list and bulk mail with malformed list headers, or missing the ones you require, or with an unsubscribe link but no List-Unsubscribe header;
+    and accept mail from lists you trust outright, when your MX's DKIM check vouches for them.
+
 Writing them should be made significantly easier thanks to being able to test with [Milter::Client](https://metacpan.org/pod/Milter%3A%3AClient),
 and [Milter::Harness](https://metacpan.org/pod/Milter%3A%3AHarness), which runs the milter for the duration of a test.
 
@@ -99,15 +117,10 @@ Based on the spam I currently receive, implementing these below (and the above) 
 
 I suspect most of this has prior art elsewhere, as if I could come up with this in an afternoon I'm sure for-pay MXes figured these out years ago.
 
-## MatchingFrom
-
-Reject mails which have a differing envelope sender and 'From' Header.
-
-A common oversight by spammers, especially when they are sending spoofed email from a rooted box.
-
 ## RejectUnsolicitedMailingLists
 
-Spammers now frequently include a Mailing list unsubscribe header, because google looks for it specifically.
+[Milter::Recipe::MailingList](https://metacpan.org/pod/Milter%3A%3ARecipe%3A%3AMailingList) refuses list mail which gets its headers wrong, and unsubscribe links without a List-Unsubscribe header.
+What it does not do yet is ask the list.
 
 Normally, mailing list software has a mechanism to verify that a user has in fact signed up for this list.
 
@@ -115,7 +128,7 @@ Spammers do not get in the habit of hosting services which might respond in the 
 
 As such, checking for this much like sender verification connections is valuable.
 
-It is also of value to reject mails without an unsubscribe header, but some variation of "to stop receiving such communications reply, or click etc".
+MailingList only counts unsubscribe links; mails asking you to reply with "unsubscribe" to stop receiving them get past it.
 
 ## 419Detect
 
@@ -163,7 +176,7 @@ The `service` settings from the configuration (with their defaults), and the con
 
 ## $class->config()
 
-Retrieve the config section relevant to the current class, as a hashref, with the service's `debug` setting added.
+Retrieve the config section relevant to the current class, as a hashref, with the service's `debug` and `no_accum` settings added.
 
 If your Recipe requires configuration, this is the method to call.
 It is a lookup on the singleton, so calling it from every callback costs nothing to speak of.
@@ -190,6 +203,17 @@ This will map the config action to the appropriate response code to use as the f
 
 Dies in the event your action has no appropriate code (e.g. discard, loop).
 
+## @values = $class->config\_list($value)
+
+A configuration value as a list: [Config::Simple](https://metacpan.org/pod/Config%3A%3ASimple) hands back a comma separated value as an arrayref, and a single one as a string.
+Values are trimmed, and empty ones dropped.  An undefined value is an empty list.
+
+## $state = $class->stash($ctx, \[\\%fresh\])
+
+The recipe's own part of the connection's private data, kept under its package name so recipes do not trample each other.
+Given `\%fresh`, replaces it first, which recipes do at MAIL FROM so nothing carries over from an earlier message on the connection.
+Returns undef if nothing was ever stashed.
+
 ## $class->config\_reply($ctx, $message)
 
 Take the configured action, with `$message` as the SMTP reply when the action has one (reject and tempfail).
@@ -208,12 +232,12 @@ Actually run the milter.
 Sets up some default milter callbacks that generally do the right thing:
 
 - 1)
-Continue until EOM, then accept.  It is presumed any milter callbacks you configure do what they need to do before this point.
+Continue until EOM, then accept.  The recipes' own end of message callbacks run before this one, so they can still decide.
 - 2)
 On Connect() we setpriv an empty hashref that you can store connection specific state within to support functionality requiring multiple callbacks.
 - 3)
 On Header() and Body() we accumulate the header and body fragments into the 'header' and 'body' keys of said hashref, that you might consult them in EOH, EOB and EOM.
-Each header is accumulated as a `"Name: value\n"` line.
+Each header is accumulated as a `"Name: value\n"` line.  Both start afresh at each MAIL FROM, since a connection can carry several messages.
 
 3\. Has some consequences in that if you don't limit the size of msgs and headers.
 With 10 workers each handling 100 conns, your upper limit if say, you get a bunch of 1MB mails would be ~1GB of ram worst case.
@@ -233,7 +257,7 @@ Return the hash of callbacks to be run by the milter.
 
 ## loaded\_recipes
 
-The package names of the recipes loaded from the configuration, sorted.
+The package names of the recipes loaded from the configuration, in the order they run (see `order` in ["Service configuration"](#service-configuration)).
 
 ## accept, cont, reject
 

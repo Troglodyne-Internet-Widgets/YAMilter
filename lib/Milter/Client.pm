@@ -191,7 +191,10 @@ They are returned in C<$modifications>, an arrayref of C<[ $code, $payload ]>.
 Headers are sent one per command, as C<[SMFIC_HEADER, $name, $value]>.
 The older form of C<[SMFIC_HEADER, $all_the_headers]> still works, but the milter will see it as one header with an empty value.
 
-No reply is waited for after SMFIC_QUIT, as milters do not send one.
+Macros go as C<[SMFIC_MACRO, $command, $name => $value, ...]>, sent before the command they belong to,
+for example C<[SMFIC_MACRO, SMFIC_MAIL, i => 'QUEUEID']> before SMFIC_MAIL for the queue id.
+
+No reply is waited for after SMFIC_MACRO or SMFIC_QUIT, as milters do not send one.
 
 Without options, a milter which says nothing within a second is presumed to want you to continue.
 Pass a hashref of options before the commands to change that:
@@ -224,13 +227,16 @@ sub sendmail {
         my $action = $args->[0];
 
         # The single string form of SMFIC_HEADER needs the value terminator added
-        my @args   = ( $action eq SMFIC_HEADER && @$args == 2 ) ? ( @$args, '' ) : @$args;
-        my $packed = pack( $templates{$action}, @args );
+        my @args = ( $action eq SMFIC_HEADER && @$args == 2 ) ? ( @$args, '' ) : @$args;
+
+        # A macro command carries the command it is for, then any number of name/value pairs
+        my $template = $action eq SMFIC_MACRO ? 'A A' . ( ' Z*' x ( @args - 2 ) ) : $templates{$action};
+        my $packed   = pack( $template, @args );
 
         # What we will actually send over the wire
         my $packed_with_length = pack( 'N a*', length($packed), $packed );
         my $sent = syswrite $sock, $packed_with_length;
-        next if $action eq SMFIC_QUIT;
+        next if $action eq SMFIC_QUIT || $action eq SMFIC_MACRO;
 
         my ( $res, $payload ) = $sent ? _poll( $sock, $opts{timeout} ) : (CLIENT_EOF);
 
