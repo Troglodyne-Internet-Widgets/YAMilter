@@ -135,7 +135,8 @@ subtest 'config, in yamilter' => sub {
     write_file( "$tmp/lib/Milter/Recipe/Early.pm", "package Milter::Recipe::Early;\nuse parent qw{Milter::Recipe};\nour %cb = ( helo => sub { __PACKAGE__->config(); __PACKAGE__->cont() } );\n1;\n" );
     local @INC = ( "$tmp/lib", @INC );
 
-    my $cfg    = write_file( "$tmp/yamilter.cfg", "[service]\nsock=$tmp/yamilter.sock\npidfile=$tmp/yamilter.pid\nworkers=1\n[Early]\naction=discard\n[Language]\nlangs=en\naction=defer\n" );
+    # min_words=10, as the message below is shorter than Language judges by default
+    my $cfg    = write_file( "$tmp/yamilter.cfg", "[service]\nsock=$tmp/yamilter.sock\npidfile=$tmp/yamilter.pid\nworkers=1\n[Early]\naction=discard\n[Language]\nlangs=en\naction=defer\nmin_words=10\n" );
     my $milter = Milter::Harness->new( script => "$FindBin::Bin/../bin/yamilter", config => $cfg );
     $milter->start();
     my ( $code, $reply ) = Milter::Client::sendmail(
