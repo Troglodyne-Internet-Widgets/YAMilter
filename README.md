@@ -163,9 +163,10 @@ The `service` settings from the configuration (with their defaults), and the con
 
 ## $class->config()
 
-Retrieve the config section relevant to the current class.
+Retrieve the config section relevant to the current class, as a hashref, with the service's `debug` setting added.
 
 If your Recipe requires configuration, this is the method to call.
+It is a lookup on the singleton, so calling it from every callback costs nothing to speak of.
 
 ## $class->config\_action()
 
