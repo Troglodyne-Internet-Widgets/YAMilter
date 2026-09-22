@@ -1,5 +1,7 @@
+use 5.014;
 use strict;
-use warnings;
+use warnings FATAL => 'all';
+use re '/aa';
 
 use FindBin::libs;
 use File::Path qw{make_path};
@@ -37,7 +39,7 @@ subtest 'commands' => sub {
 $corpus->index_source( $fx->{source} );
 
 subtest 'run' => sub {
-    like( dies { Milter::Corpus::Replay->new( corpus => $corpus, script => $yamilter, config => '/bogus' ) }, qr/No such configuration file/, 'missing configuration dies' );
+    like( dies { Milter::Corpus::Replay->new( corpus => $corpus, script => $yamilter, config => '/bogus' ) }, qr/Could not read configuration file \/bogus: /, 'missing configuration dies' );
 
     my $cfg    = write_file( "$tmp/lang.cfg", "[Language]\nlangs=en\naction=defer\n" );
     my $replay = Milter::Corpus::Replay->new( corpus => $corpus, script => $yamilter, config => $cfg );
@@ -100,3 +102,11 @@ subtest 'each' => sub {
 };
 
 done_testing();
+
+__END__
+
+=head1 DESCRIPTION
+
+L<Milter::Corpus::Replay>: the commands built for a message, and replays of the fixture mail through a real yamilter.
+
+=cut

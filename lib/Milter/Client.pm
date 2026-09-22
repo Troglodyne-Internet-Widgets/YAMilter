@@ -13,9 +13,11 @@ As you might imagine, that complicates the sort of automated testing you might w
 
     # You'll need the constants, which are the same as in the sendmail headers
     use Milter::Client qw{:constants};
+    use IO::Socket::UNIX;
+    use Socket qw{SOCK_STREAM};
 
     my $sockfile = '/var/run/feet.sock';
-    my $s = IO::Socket::UNIX->new(
+    my $sock = IO::Socket::UNIX->new(
         Type => SOCK_STREAM(),
         Peer => $sockfile,
     ) || die "Couldn't connect to $sockfile: $@";
@@ -50,14 +52,16 @@ As you might imagine, that complicates the sort of automated testing you might w
 
     # Pass options as a hashref before the commands to find out when the milter hangs or dies,
     # rather than presuming it wanted you to continue.
-    my ($code, $payload) = Milter::Client::sendmail($sock, { timeout => 5 }, @gibbering);
+    ($code, $payload) = Milter::Client::sendmail($sock, { timeout => 5 }, @gibbering);
     warn "Milter hung"  if $code eq CLIENT_TIMEOUT;
     warn "Milter died"  if $code eq CLIENT_EOF;
 
 =cut
 
+use 5.014;
 use strict;
-use warnings;
+use warnings FATAL => 'all';
+use re '/aa';
 
 use Time::HiRes ();
 

@@ -2,19 +2,154 @@ package Milter::Recipe;
 
 # ABSTRACT: Framework for building a milter based on various recipes
 
+use 5.014;
 use strict;
-use warnings;
-
-no warnings qw{experimental};
-use feature qw{state};
-use warnings;
+use warnings FATAL => 'all';
+use re '/aa';
 
 use Config::Simple;
 use Sendmail::PMilter qw{:all};
 
+=head1 SYNOPSIS
+
+    # What yamilter --config /etc/yamilter.cfg does
+    use Milter::Recipe;
+    Milter::Recipe->new('/etc/yamilter.cfg')->run();
+
+=head1 DESCRIPTION
+
+Yet another Milter program.
+
+The focus here is to have some overlooked filters & common business logic that you can load up with simple configuration.
+
+Any sub-namespace of C<Milter::Recipe> is considered available to be loaded.
+
+Based on L<Sendmail::PMilter>; most of the work making a recipe is in writing a milter callback used thereby.
+
+While there exist older modular milters such as C<Mail::Milter>, they have not received updates in many, many years.
+Most of the functionality therein is better covered by other software such as opendmarc/opendkim or postfix itself.
+
 =head1 CONFIGURATION
 
-See the L<yamilter> documentation for config file format.
+    [service]
+    pidfile=/var/run/yamilter.pid
+    sock=/var/run/yamilter.sock
+    workers=10
+    debug=0
+    [Language]
+    langs=en, fr, es
+    action=discard
+    ...
+
+List the recipes you want to load, and then specify any configuration relevant to them (if applicable).
+
+A recipe section must have at least one key (C<action=reject> will do).
+L<Config::Simple> does not see a section with no keys, so the recipe is not loaded.
+
+=head2 Service configuration
+
+Included in the F<service/> directory is a systemd service configuration you can drop in and use right away.
+It is written to refer to F</etc/yamilter.cfg> as the config file.
+
+The C<service> section above allows configuration of where the PID/Socket files live, and how many workers to run.
+The values above are the defaults if you omit these parameters.
+
+You'll likely want to configure chrooted dovecot to have the sock inside its chroot.
+
+=head2 Recipe configuration
+
+Each recipe will accept an C<action> parameter.
+By default, each recipe MUST reject, but if the action is set, do that instead.
+
+The only meaningful actions to take other than reject are discard or tempfail.
+Maybe you want to accept, but that is usually ill-advised.
+
+TODO: add a 'spam' action to add a spam header and accept.
+
+All other recipe configuration is up to the recipe itself and you should refer to their documentation.
+
+=head1 RECIPES
+
+The ones provided with the YAMilter program are both scratching my personal itch,
+and considered sufficient example for other authors to do the same.
+
+=over 4
+
+=item L<Milter::Recipe::Language>
+
+Reject mails which are not comprehensible to your userbase.
+
+=back
+
+Writing them should be made significantly easier thanks to being able to test with L<Milter::Client>,
+and L<Milter::Harness>, which runs the milter for the duration of a test.
+
+=head2 Testing recipes against real mail
+
+C<yamilter-corpus> replays a copy of your mailboxes through a yamilter configuration,
+and records the verdict for each message in an SQLite database.
+You can then look at the mail that got through for patterns, and write a recipe for them.
+
+    yamilter-corpus index  --db corpus.db --source /path/to/Maildir
+    yamilter-corpus run    --db corpus.db --config recipes.cfg --each --jobs 8
+    yamilter-corpus report --db corpus.db headers
+    yamilter-corpus report --db corpus.db diff 1 2
+
+=head1 FURTHER IDEAS
+
+Based on the spam I currently receive, implementing these below (and the above) would remove 99.99% of the spam I receive on my mx.
+
+I suspect most of this has prior art elsewhere, as if I could come up with this in an afternoon I'm sure for-pay MXes figured these out years ago.
+
+=head2 MatchingFrom
+
+Reject mails which have a differing envelope sender and 'From' Header.
+
+A common oversight by spammers, especially when they are sending spoofed email from a rooted box.
+
+=head2 RejectUnsolicitedMailingLists
+
+Spammers now frequently include a Mailing list unsubscribe header, because google looks for it specifically.
+
+Normally, mailing list software has a mechanism to verify that a user has in fact signed up for this list.
+
+Spammers do not get in the habit of hosting services which might respond in the affirmative to this, as people tend to retaliate against them quite fiercely.
+
+As such, checking for this much like sender verification connections is valuable.
+
+It is also of value to reject mails without an unsubscribe header, but some variation of "to stop receiving such communications reply, or click etc".
+
+=head2 419Detect
+
+Uses an LLM to identify if an email is obviously a 419 (advance fee) scam of some kind, and rejects it.
+
+=head2 InsiderThreats
+
+Reject sender domains coming from local which are known to not resolve to this host.
+
+This is one of the problems with shared hosting.
+You will eventually get a client that wants to run sendmail overtime to phish with a stolen CC.
+
+This way they at least have to go to the trouble of buying a domain to attempt fraud.
+
+=head2 PhishingDomains
+
+Reject mails from domains which resolve to other live domains when homoglyph replaced, as these are almost always phishing.
+
+Reject mails from domains which resolve to other live domains when the TLD is swapped, e.g. C<google.su> versus C<google.com>.
+
+(You should already configure your mx to reject domains that do not resolve).
+
+=head2 ASNBlock
+
+Outright block entire ASNs.  For when all else fails.
+
+=head2 HeaderIfSize
+
+Add a header (likely to control relaying behavior) if the mail is above a certain size.
+
+It is a common practice to throw up your hands and use a for-pay SMTP relay to be deliverable to the big 10 email providers.
+However this can get pricey (or fail outright) if you send things with big attachments, and you probably want to avoid that.
 
 =cut
 
@@ -37,9 +172,7 @@ sub new {
 
     return $singleton if $singleton;
 
-    die "No such configuration file $cfile!" unless -f $cfile;
-
-    my $config = Config::Simple->new($cfile);
+    my $config = Config::Simple->new($cfile) or die "Could not read configuration file $cfile: " . Config::Simple->error() . "\n";
 
     #XXX passing no block to get_block returns the list of blocks, but this is undocumented.
     my @blocks = grep { $_ ne 'service' } ( $config->get_block() );
@@ -68,6 +201,12 @@ sub new {
     $singleton = bless( \%obj, $class );
     return $singleton;
 }
+
+=head2 pidfile, sock, workers, cfile, debug
+
+The C<service> settings from the configuration (with their defaults), and the configuration file's path.
+
+=cut
 
 sub pidfile { $_[0]->{pidfile} }
 sub sock    { $_[0]->{sock} }
@@ -117,7 +256,7 @@ Acceptable actions are (reject, discard, tempfail, accept, continue, loop).
 This is the sub to call to accomplish that:
 
     ...
-    return __PACKAGE__->config_action(); 
+    return __PACKAGE__->config_action();
     ...
 
 =cut
@@ -195,6 +334,8 @@ but there exist rare problems which require full context to be correct and which
 sub run {
     my $self = shift;
 
+    # Under systemd or Milter::Harness this goes to a pipe or file, where block buffering would lose it on TERM
+    STDOUT->autoflush(1);
     print "YAMilter starting up...\n";
     print "YAMilter using config file " . $self->cfile() . "\n";
 
@@ -306,7 +447,6 @@ my %mr = (
     undef()          => 'UNKNOWN',
     ''               => 'UNKNOWN',
 );
-use warnings;
 
 # Just run everything in order until we short-circuit
 sub _run_callbacks {
@@ -320,13 +460,18 @@ sub _run_callbacks {
         if ($DEBUG) {
             no warnings qw{uninitialized};
             my $res_trans = $mr{$res};
-            use warnings;
             warn "Response from callback: $res_trans ($res)" if $DEBUG;
         }
         return $res if defined $res && $res ne SMFIS_CONTINUE;
     }
     return SMFIS_CONTINUE;
 }
+
+=head2 loaded_recipes
+
+The package names of the recipes loaded from the configuration, sorted.
+
+=cut
 
 sub loaded_recipes {
     return sort grep { m/^Milter::Recipe::/ } _inc2mod();
@@ -340,6 +485,13 @@ sub _inc2mod {
         $subj
     } keys(%INC);
 }
+
+=head2 accept, cont, reject
+
+Return C<SMFIS_ACCEPT>, C<SMFIS_CONTINUE> or C<SMFIS_REJECT>, for recipe callbacks to return.
+Most callbacks want C<< __PACKAGE__->cont() >>, or C<< __PACKAGE__->config_action() >> when they have made up their mind.
+
+=cut
 
 sub accept {
     return SMFIS_ACCEPT;

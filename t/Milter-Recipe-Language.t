@@ -1,5 +1,7 @@
+use 5.014;
 use strict;
-use warnings;
+use warnings FATAL => 'all';
+use re '/aa';
 
 use FindBin;
 use FindBin::libs;
@@ -35,3 +37,11 @@ is( $result, SMFIR_REPLYCODE, "Marked message as DEFER when NOT in correct langu
 like( $payload, qr/450 4\.7\.1 /, "Correct SMTP/ESMTP status codes returned" );
 
 done_testing();
+
+__END__
+
+=head1 DESCRIPTION
+
+The Language recipe accepts mail in a configured language, and defers the rest with the configured reply.
+
+=cut

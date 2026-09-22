@@ -1,8 +1,8 @@
 Return-Path: <bulk@test.test>
 Delivered-To: rcpt@test.test
 Received: from bulk.test.test (unknown [198.51.100.7])
-	by mx.test.test (Postfix) with ESMTP id CCCC;
-	Mon, 1 Jan 2024 00:00:00 +0000
+    by mx.test.test (Postfix) with ESMTP id CCCC;
+    Mon, 1 Jan 2024 00:00:00 +0000
 From: Deals <bulk@test.test>
 To: rcpt@test.test
 Subject: =?UTF-8?B?QmVzdCBkZWFscyDinIU=?=

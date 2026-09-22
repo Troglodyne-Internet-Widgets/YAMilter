@@ -1,7 +1,9 @@
 package CorpusTest;
 
+use 5.014;
 use strict;
-use warnings;
+use warnings FATAL => 'all';
+use re '/aa';
 
 use Cwd;
 use File::Copy qw{copy};

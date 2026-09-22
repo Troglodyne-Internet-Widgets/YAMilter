@@ -2,8 +2,10 @@ package Milter::Harness;
 
 # ABSTRACT: Start and stop a yamilter process for testing recipes against
 
+use 5.014;
 use strict;
-use warnings;
+use warnings FATAL => 'all';
+use re '/aa';
 
 use Config::Simple;
 use File::Temp;
@@ -19,7 +21,7 @@ use Time::HiRes qw{usleep};
     );
     $milter->start();
     my $sock = $milter->connect();
-    ...
+    # Talk to it with Milter::Client::sendmail($sock, @commands)
     my $output = $milter->stop();
 
 =head1 DESCRIPTION
@@ -56,16 +58,24 @@ Seconds to wait for the socket to show up.  Defaults to 10.
 
 sub new {
     my ( $class, %args ) = @_;
-    die "script is required"                       unless $args{script};
-    die "config is required"                       unless $args{config};
-    die "No such configuration file $args{config}" unless -f $args{config};
-
-    my $cfg = Config::Simple->new( $args{config} ) or die Config::Simple->error();
+    die "script is required" unless $args{script};
+    die "config is required" unless $args{config};
+    my $cfg = Config::Simple->new( $args{config} ) or die "Could not read configuration file $args{config}: " . Config::Simple->error() . "\n";
     $args{sock} = $cfg->param('service.sock') // '/var/run/yamilter.sock';
     $args{wait} //= 10;
 
     return bless( \%args, $class );
 }
+
+=head2 sock
+
+The path of the milter's socket, from the configuration.
+
+=head2 pid
+
+The process id of the running milter, or undef when it is not running.
+
+=cut
 
 sub sock { $_[0]->{sock} }
 sub pid  { $_[0]->{pid} }
@@ -94,7 +104,9 @@ sub start {
         open( STDOUT, '>&', $self->{log} ) or POSIX::_exit(1);
         open( STDERR, '>&', $self->{log} ) or POSIX::_exit(1);
         local $ENV{PERL5LIB} = join( ':', grep { !ref } @INC );
-        exec( $^X, $self->{script}, '--config', $self->{config} ) or POSIX::_exit(1);
+
+        # A fresh perl rather than a forked copy of this one, so the milter inherits no loaded recipes or open database handles
+        exec( $^X, $self->{script}, '--config', $self->{config} ) or POSIX::_exit(1);    ## no critic (logicLAB::ProhibitShellDispatch)
     }
     $self->{pid}   = $pid;
     $self->{owner} = $$;

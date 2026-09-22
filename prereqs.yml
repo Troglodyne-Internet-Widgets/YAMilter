@@ -1,0 +1,9 @@
+# [AutoPrereqs] finds everything that is use'd.  This file is for what it cannot see.
+runtime:
+  requires:
+    # Keep equal to the use line in every module and test.
+    perl: '5.014'
+    # Named only in a DSN string.
+    DBD::SQLite: '0'
+    # any() arrived in 1.33.
+    List::Util: '1.33'

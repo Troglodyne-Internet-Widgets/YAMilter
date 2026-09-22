@@ -1,4 +1,18 @@
+*.swp
+*.swo
+*.swn
+
+# Build leavings
+MYMETA.json
+MYMETA.yml
+Makefile
+pm_to_blib
+blib/
+cover_db/
 .build
+Milter-Recipe-*
+
+# Corpus databases hold metadata from real mail
 *.db
 *.db-wal
 *.db-shm

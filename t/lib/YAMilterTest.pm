@@ -1,16 +1,27 @@
+package YAMilterTest;
+
+use 5.014;
 use strict;
-use warnings;
+use warnings FATAL => 'all';
+use re '/aa';
 
 use FindBin::libs;
 
 use Exporter 'import';
-our @EXPORT_OK = qw{fork_and_term getsock getconfig writeconfig};
+our @EXPORT_OK   = qw{fork_and_term getsock getconfig writeconfig gibs};
+our %EXPORT_TAGS = ( all => \@EXPORT_OK );
 
 use Milter::Client qw{:constants};
 use Milter::Harness;
 use File::Temp;
 use Config::Simple;
 use IO::Socket::UNIX;
+
+=head1 DESCRIPTION
+
+Helpers for the tests which run yamilter: a configuration in a temporary directory, a canned milter conversation, and a wrapper around L<Milter::Harness>.
+
+=cut
 
 # Mock up a session for us to use.
 # Unfortunately for us we can't just use SMTP commands and instead have to freebase C structs
