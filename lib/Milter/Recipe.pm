@@ -445,8 +445,7 @@ sub run {
 }
 
 my %cb = (
-    negotiate => \&cont,
-    connect   => sub {
+    connect => sub {
         my ($ctx) = @_;
         $ctx->setpriv( {} );
         return cont();

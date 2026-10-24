@@ -120,6 +120,25 @@ subtest 'order and end of message, in yamilter' => sub {
     like( $log, qr/service\.order names Nonesuch, which has no section of its own/, 'an order naming an unconfigured recipe stops yamilter starting' );
 };
 
+# An MTA leaves out each step the milter's answer to OPTNEG declines, so echoing the offer back would leave yamilter only the end of the message
+subtest 'negotiation, in yamilter' => sub {
+    my $tmp    = File::Temp->newdir();
+    my $cfg    = write_file( "$tmp/yamilter.cfg", "[service]\nsock=$tmp/yamilter.sock\npidfile=$tmp/yamilter.pid\nworkers=1\n[Language]\nlangs=en\n" );
+    my $milter = Milter::Harness->new( script => "$FindBin::Bin/../bin/yamilter", config => $cfg );
+    $milter->start();
+
+    my $sock  = $milter->connect();
+    my $offer = SMFIC_OPTNEG . pack( 'N N N', 6, 0x1FF, 0x1FFFFF );
+    syswrite( $sock, pack( 'N a*', length($offer), $offer ) );
+    sysread( $sock, my $len,   4 );
+    sysread( $sock, my $reply, unpack( 'N', $len ) );
+    my ( $code, undef, undef, $protocol ) = unpack( 'a N N N', $reply );
+    $milter->stop();
+
+    is( $code,                                            SMFIC_OPTNEG, 'yamilter answers the offer' );
+    is( sprintf( '0x%06X', $protocol & ~SMFIP_DEFAULTS ), '0x000000',   '... and declines no step, and asks to reply to each' );
+};
+
 subtest 'config, in yamilter' => sub {
     my $tmp = File::Temp->newdir();
 

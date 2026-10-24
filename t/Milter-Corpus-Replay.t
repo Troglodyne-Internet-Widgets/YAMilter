@@ -8,7 +8,6 @@ use File::Path qw{make_path};
 use Test2::V0;
 use Test2::Plugin::NoWarnings;
 
-use Milter::Client qw{:constants};
 use Milter::Corpus::Replay;
 use CorpusTest qw{fixture_corpus write_file};
 
@@ -16,25 +15,6 @@ my $fx       = fixture_corpus();
 my $corpus   = $fx->{corpus};
 my $tmp      = $fx->{tmp};
 my $yamilter = "$fx->{run_dir}/bin/yamilter";
-
-subtest 'commands' => sub {
-    my $body = ( "x" x 99 . "\n" ) x 1000;
-    my @cmds = Milter::Corpus::Replay::commands( "From: a\@test.test\nSubject: s\n\n$body", { client_ip => '192.0.2.1', helo => 'h', mail_from => '', rcpt_to => 'r@test.test' } );
-    is( $cmds[1], [ SMFIC_CONNECT, '[192.0.2.1]', SMFIA_INET, 25, '192.0.2.1' ], 'connect with the client address' );
-    is( $cmds[3], [ SMFIC_MAIL, '<>' ], 'null sender kept' );
-    is( [ grep { $_->[0] eq SMFIC_HEADER } @cmds ], [ [ SMFIC_HEADER, 'From', 'a@test.test' ], [ SMFIC_HEADER, 'Subject', 's' ] ], 'one command per header' );
-    my @chunks = grep { $_->[0] eq SMFIC_BODY } @cmds;
-    is( scalar(@chunks), 2, 'a 101k body is sent in two chunks' );
-    ok( !( grep { length( $_->[1] ) > MILTER_CHUNK_SIZE } @chunks ), '... none over the chunk size' );
-    is( join( '', map { $_->[1] } @chunks ), ( "x" x 99 . "\r\n" ) x 1000, '... with CRLF line endings' );
-    is( [ map { $_->[0] } @cmds[ -2, -1 ] ], [ SMFIC_BODYEOB, SMFIC_QUIT ], 'ends with end of message, then quit' );
-
-    @cmds = Milter::Corpus::Replay::commands( "Subject: s\n\nx", {} );
-    is( $cmds[1], [ SMFIC_CONNECT, 'localhost', SMFIA_UNKNOWN, 25, '' ], 'no client address, unknown family' );
-
-    @cmds = Milter::Corpus::Replay::commands( "Subject: s\n\nx", { client_ip => '2001:db8::1', client_host => 'v6.test.test' } );
-    is( $cmds[1], [ SMFIC_CONNECT, 'v6.test.test', SMFIA_INET6, 25, '2001:db8::1' ], 'IPv6 client' );
-};
 
 $corpus->index_source( $fx->{source} );
 

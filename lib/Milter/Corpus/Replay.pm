@@ -16,7 +16,6 @@ use POSIX       qw{WNOHANG};
 use Time::HiRes qw{time};
 
 use Milter::Client qw{:constants};
-use Milter::Corpus qw{split_message};
 use Milter::Harness;
 use Milter::Recipe;
 
@@ -31,9 +30,8 @@ use Milter::Recipe;
 
 =head1 DESCRIPTION
 
-Starts yamilter with the given configuration, and plays every indexed message through it as an MTA would:
-OPTNEG, CONNECT (with the client address from the message's Received headers), HELO, MAIL, RCPT, DATA,
-one HEADER per header, EOH, the body in chunks (with bare LF turned into CRLF, as on the wire), and end of message.
+Starts yamilter with the given configuration, and plays every indexed message through it as an MTA would,
+with C<conversation()> in L<Milter::Client>, and the client address from the message's Received headers.
 
 Each message gets a fresh connection.
 yamilter writes a decision_log for the run, which is how each result records the recipe which decided it.
@@ -45,9 +43,6 @@ The configuration's C<service> section is replaced: the socket and pidfile go in
 Only C<order> is kept, less any recipe a run leaves out.
 
 =cut
-
-# 0x1FF: every action a v6 MTA can offer.  0x1FFFFF: every protocol step.
-my @OPTNEG = ( SMFIC_OPTNEG, 6, 0x1FF, 0x1FFFFF );
 
 # Replayed messages get this and their id as the MTA queue id ({i} macro), so the decision_log can be tied back to them
 my $QUEUE_ID_PREFIX = 'yamilter-corpus-';
@@ -300,7 +295,7 @@ sub _replay_one {
     return { code => CLIENT_EOF, action => 'error', reply => "Could not read $msg->{path}" } unless defined $raw;
 
     my $sock = $milter->connect();
-    my ( $code, $payload, $mods ) = Milter::Client::sendmail( $sock, { timeout => $timeout }, commands( $raw, $msg, "$QUEUE_ID_PREFIX$msg->{id}" ) );
+    my ( $code, $payload, $mods ) = Milter::Client::sendmail( $sock, { timeout => $timeout }, Milter::Client::conversation( $raw, { ( map { $_ => $msg->{$_} } qw{client_ip client_host helo mail_from rcpt_to} ), queue_id => "$QUEUE_ID_PREFIX$msg->{id}" } ) );
     close $sock;
 
     my $action = $ACTION{$code};
@@ -317,40 +312,6 @@ sub _replay_one {
         reply         => $payload,
         modifications => ( $mods && @$mods ) ? Cpanel::JSON::XS->new->canonical->encode($mods) : undef,
     };
-}
-
-=head1 FUNCTIONS
-
-=head2 @commands = commands($raw, \%envelope, [$queue_id])
-
-The milter conversation an MTA would have for a message, given its raw content and envelope (as from L<Milter::Corpus/messages>).
-With C<$queue_id>, it is sent as the C<{i}> macro before MAIL FROM, as postfix does.
-
-=cut
-
-sub commands {
-    my ( $raw, $env, $queue_id ) = @_;
-    my ( $fields, $body ) = split_message($raw);
-    $body =~ s/(?<!\r)\n/\r\n/g;
-
-    my $ip     = $env->{client_ip};
-    my $family = !$ip ? SMFIA_UNKNOWN : index( $ip, ':' ) >= 0 ? SMFIA_INET6 : SMFIA_INET;
-    my $host   = $env->{client_host} // ( $ip ? "[$ip]" : 'localhost' );
-
-    return (
-        [@OPTNEG],
-        [ SMFIC_CONNECT, $host, $family, 25, $ip // '' ],
-        [ SMFIC_HELO, $env->{helo} // 'unknown' ],
-        ( defined $queue_id ? [ SMFIC_MACRO, SMFIC_MAIL, i => $queue_id ] : () ),
-        [ SMFIC_MAIL, '<' . ( $env->{mail_from} // '' ) . '>' ],
-        [ SMFIC_RCPT, '<' . ( $env->{rcpt_to}   // '' ) . '>' ],
-        [SMFIC_DATA],
-        ( map { [ SMFIC_HEADER, @$_ ] } @$fields ),
-        [SMFIC_EOH],
-        Milter::Client::body_chunks($body),
-        [SMFIC_BODYEOB],
-        [SMFIC_QUIT],
-    );
 }
 
 1;
