@@ -7,21 +7,12 @@ use FindBin::libs;
 use Test2::V0;
 use Test2::Plugin::NoWarnings;
 
-use Milter::Corpus qw{split_message};
-use CorpusTest     qw{fixture_corpus};
+use Milter::Corpus;
+use CorpusTest qw{fixture_corpus};
 
 my $fx     = fixture_corpus();
 my $corpus = $fx->{corpus};
 my $source = $fx->{source};
-
-subtest 'split_message' => sub {
-    my ( $fields, $body ) = split_message("A: one\r\nB:  two\r\n\tfolded\r\nnot a header\r\nC:\r\n\r\nbody\r\n\r\nmore");
-    is( $fields, [ [ 'A', 'one' ], [ 'B', " two\n\tfolded" ], [ 'C', '' ] ], 'fields split, folding kept, junk dropped' );
-    is( $body,   "body\r\n\r\nmore",                                         'body is everything after the first blank line' );
-
-    ( $fields, $body ) = split_message("A: headers only\n");
-    is( [ $fields, $body ], [ [ [ 'A', 'headers only' ] ], '' ], 'a message with no body has an empty one' );
-};
 
 subtest 'index_source' => sub {
     like( dies { $corpus->index_source("$source/bogus") }, qr/No such directory/, 'a missing source dies' );

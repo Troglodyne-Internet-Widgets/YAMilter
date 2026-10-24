@@ -7,3 +7,5 @@ runtime:
     DBD::SQLite: '0'
     # any() arrived in 1.33.
     List::Util: '1.33'
+    # conversation(), split_message() and the negotiation that the corpus replay relies on arrived in 0.001.
+    Milter::Client: '0.001'

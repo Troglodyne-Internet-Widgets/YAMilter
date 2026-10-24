@@ -15,7 +15,6 @@ use Milter::Client qw{:constants};
 use Milter::Harness;
 use File::Temp;
 use Config::Simple;
-use IO::Socket::UNIX;
 
 =head1 DESCRIPTION
 
@@ -80,10 +79,7 @@ sub writeconfig {
 sub getsock {
     my $sockfile = getconfig()->param('service.sock');
 
-    return IO::Socket::UNIX->new(
-        Type => SOCK_STREAM(),
-        Peer => $sockfile,
-    ) || die "Couldn't connect to $sockfile: $@";
+    return Milter::Client::milter_socket($sockfile);
 }
 
 # Run the milter in a child for the duration of $callback, then return what it printed.

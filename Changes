@@ -21,6 +21,9 @@ Revision history for Milter-Recipe
     - yamilter-corpus records which recipe decided each message, and shows it in summary, replies, diff and show
     - Add yamilter-corpus ignore, to leave known mail out of every report
     - Reports say which runs and recipes they cover, and what the ignore rules left out; the headers report's columns say what they are shares of
+    - Milter::Client is a distribution of its own, Milter-Client, so that testing a milter does not install yamilter.  split_message moves there from Milter::Corpus, and Milter::Corpus::Replay::commands becomes Milter::Client::conversation
+    - The corpus replay obeys what the milter negotiates, from Milter::Client
+    - yamilter asks the MTA for every protocol step and replies to each.  Its negotiate callback echoed the MTA's offer back, which declines every step, so an MTA that obeys the answer sent it only the end of the message
 
 1.000 2026-06-29 TEODESIAN
     - First release to CPAN

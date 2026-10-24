@@ -9,9 +9,10 @@ use re '/aa';
 
 use Config::Simple;
 use File::Temp;
-use IO::Socket::UNIX;
 use POSIX       qw{WNOHANG};
 use Time::HiRes qw{usleep};
+
+use Milter::Client;
 
 =head1 SYNOPSIS
 
@@ -126,16 +127,13 @@ sub start {
 
 =head2 connect
 
-Returns a new connection to the milter's socket.
+Returns a new connection to the milter's socket, and dies when it cannot connect.
 
 =cut
 
 sub connect {
     my $self = shift;
-    return IO::Socket::UNIX->new(
-        Type => IO::Socket::UNIX::SOCK_STREAM(),
-        Peer => $self->sock(),
-    ) || die "Could not connect to " . $self->sock() . ": $!";
+    return Milter::Client::milter_socket( $self->sock() );
 }
 
 =head2 running

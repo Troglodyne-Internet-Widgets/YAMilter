@@ -18,8 +18,7 @@ use Mail::Address;
 use Mail::Box::Manager;
 use Cpanel::JSON::XS;
 
-use Exporter 'import';
-our @EXPORT_OK = qw{split_message};
+use Milter::Client qw{split_message};
 
 =head1 SYNOPSIS
 
@@ -28,7 +27,7 @@ our @EXPORT_OK = qw{split_message};
 
     my ($first) = @{ $corpus->messages( limit => 1 ) };
     my $raw = $corpus->raw( $first->{id} );
-    my ( $fields, $body ) = Milter::Corpus::split_message($raw);
+    my ( $fields, $body ) = Milter::Client::split_message($raw);
 
 =head1 DESCRIPTION
 
@@ -367,34 +366,6 @@ The L<DBI> handle on the corpus database.
 
 sub dbh { $_[0]->{dbh} }
 
-=head1 FUNCTIONS
-
-=head2 ($fields, $body) = split_message($raw)
-
-Split a raw message the way an MTA would before handing it to a milter.
-
-C<$fields> is an arrayref of C<[ $name, $value ]> in the order they appear.
-The value has the single space after the colon removed, and keeps any folding (with CR removed) as a milter would see it.
-Lines in the header which are not a header field are dropped.
-
-C<$body> is everything after the blank line which ends the header.
-
-=cut
-
-sub split_message {
-    my ($raw) = @_;
-    my ( $head, $body ) = split( /\r?\n\r?\n/, $raw, 2 );
-    $body //= '';
-
-    my @fields;
-    foreach my $line ( split( /\r?\n(?![ \t])/, $head ) ) {
-        my ( $name, $value ) = $line =~ m/^([^:\s]+):[ \t]?(.*)\z/s or next;
-        $value =~ s/\r\n/\n/g;
-        push @fields, [ $name, $value ];
-    }
-    return ( \@fields, $body );
-}
-
 =head1 METHODS
 
 =head2 index_source($root, [$progress])
@@ -676,7 +647,7 @@ sub read_bytes {
 
 =head2 derive_envelope(\@fields)
 
-Work out the SMTP envelope and connection a message most likely arrived with, given its fields as from C<split_message>.
+Work out the SMTP envelope and connection a message most likely arrived with, given its fields as from C<split_message()> in L<Milter::Client>.
 
 =over 4
 
