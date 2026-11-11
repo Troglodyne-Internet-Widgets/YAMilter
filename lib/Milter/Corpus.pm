@@ -17,6 +17,7 @@ use List::Util qw{any};
 use Mail::Address;
 use Mail::Box::Manager;
 use Cpanel::JSON::XS;
+use Data::Validate::IP qw{is_public_ip};
 
 use Milter::Client qw{split_message};
 
@@ -661,7 +662,8 @@ From Delivered-To, else X-Original-To.
 
 =item C<helo>, C<client_ip>, C<client_host>
 
-From the topmost Received header which says it came from a public IP address.
+From the topmost Received header which says it came from a public IP address, as L<Data::Validate::IP> judges it.
+A bracketed text which is not an address, or is a private, reserved, multicast or documentation one, is skipped.
 That is the hop where the mail entered our MX, and so what the milter would have seen.
 
 =back
@@ -702,7 +704,7 @@ sub derive_envelope {
     foreach my $received (@received) {
         my ( $helo, $comment ) = $received          =~ m/^\s*from\s+(\S+)\s*(?:\(([^)]*)\))?/i        or next;
         my ( $host, $ip )      = ( $comment // '' ) =~ m/([^\s\[]*)\s*\[(?:IPv6:)?([0-9A-Fa-f:.]+)\]/ or next;
-        next unless _is_public_ip($ip);
+        next unless is_public_ip($ip);
         @env{qw{helo client_ip client_host}} = ( $helo, $ip, $host || undef );
         last;
     }
@@ -720,22 +722,6 @@ sub _first_address {
     return unless defined $value;
     my ($addr) = Mail::Address->parse($value);
     return $addr ? $addr->address : undef;
-}
-
-sub _is_public_ip {
-    my ($ip) = @_;
-    if ( $ip =~ m/^(\d+)\.(\d+)\.\d+\.\d+\z/ ) {
-        my ( $x, $y ) = ( $1, $2 );
-        return 0 if $x == 0 || $x == 10 || $x == 127;
-        return 0 if $x == 169 && $y == 254;
-        return 0 if $x == 172 && $y >= 16 && $y <= 31;
-        return 0 if $x == 192 && $y == 168;
-        return 0 if $x == 100 && $y >= 64 && $y <= 127;
-        return 1;
-    }
-    return 0 if index( $ip, ':' ) < 0;
-    return 0 if $ip eq '::1' || $ip =~ m/^(?:fe[89ab]|f[cd])/i;
-    return 1;
 }
 
 =head2 raw($message_id)
