@@ -65,15 +65,23 @@ subtest 'headers & envelope' => sub {
     is(
         $rows,
         [
-            [ qw{sender@test.test rcpt@test.test mail.test.test 192.0.2.10 relay.test.test}, '' ],
+            [ qw{sender@test.test rcpt@test.test mail.test.test 8.8.8.8 relay.test.test}, '' ],
             [ qw{absender@test.test empfaenger@test.test unknown}, undef, undef, 'mail_from,rcpt_to,helo,client_ip' ],
-            [ qw{bulk@test.test rcpt@test.test bulk.test.test 198.51.100.7 unknown}, '' ],
+            [ qw{bulk@test.test rcpt@test.test bulk.test.test 8.8.4.4 unknown}, '' ],
         ],
         'envelope from Return-Path, Delivered-To and the first public Received hop, else guessed and flagged'
     );
 
-    my $env = Milter::Corpus::derive_envelope( [ [ 'Return-Path', '<>' ], [ 'Received', 'from a (b [10.1.2.3]) by c' ], [ 'Received', "from d\n\t(e [IPv6:2001:db8::1]) by f" ] ] );
-    is( [ @$env{qw{mail_from helo client_ip client_host}} ], [ '', qw{d 2001:db8::1 e} ], 'null sender kept, private hops skipped, IPv6 and folded Received read' );
+    my $env = Milter::Corpus::derive_envelope( [ [ 'Return-Path', '<>' ], [ 'Received', 'from a (b [10.1.2.3]) by c' ], [ 'Received', "from d\n\t(e [IPv6:2606:4700:4700::1111]) by f" ] ] );
+    is( [ @$env{qw{mail_from helo client_ip client_host}} ], [ '', qw{d 2606:4700:4700::1111 e} ], 'null sender kept, private hops skipped, IPv6 and folded Received read' );
+
+    foreach my $bad qw{ [:::] [...] [999.0.2.1] [224.0.0.1] [240.0.0.1] [255.255.255.255] [192.0.2.1] [::] [IPv6:ff02::1] [IPv6:2001:db8::1] } {
+        my $only = Milter::Corpus::derive_envelope( [ [ 'Received', "from a (b $bad) by c" ] ] );
+        is( [ @$only{qw{helo derived}} ], [ 'unknown', 'mail_from,rcpt_to,helo,client_ip' ], "$bad is no client address" );
+        ok( !defined $only->{client_ip}, "$bad gives no client_ip" );
+        my $next = Milter::Corpus::derive_envelope( [ [ 'Received', "from a (b $bad) by c" ], [ 'Received', 'from d (e [8.8.8.8]) by f' ] ] );
+        is( [ @$next{qw{helo client_ip}} ], [ 'd', '8.8.8.8' ], "$bad is skipped for the next Received header" );
+    }
 };
 
 subtest 'messages' => sub {
