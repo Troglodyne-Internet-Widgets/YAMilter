@@ -75,7 +75,7 @@ subtest 'headers & envelope' => sub {
     my $env = Milter::Corpus::derive_envelope( [ [ 'Return-Path', '<>' ], [ 'Received', 'from a (b [10.1.2.3]) by c' ], [ 'Received', "from d\n\t(e [IPv6:2606:4700:4700::1111]) by f" ] ] );
     is( [ @$env{qw{mail_from helo client_ip client_host}} ], [ '', qw{d 2606:4700:4700::1111 e} ], 'null sender kept, private hops skipped, IPv6 and folded Received read' );
 
-    foreach my $bad qw{ [:::] [...] [999.0.2.1] [224.0.0.1] [240.0.0.1] [255.255.255.255] [192.0.2.1] [::] [IPv6:ff02::1] [IPv6:2001:db8::1] } {
+    foreach my $bad (qw{ [:::] [...] [999.0.2.1] [224.0.0.1] [240.0.0.1] [255.255.255.255] [192.0.2.1] [::] [IPv6:ff02::1] [IPv6:2001:db8::1] }) {
         my $only = Milter::Corpus::derive_envelope( [ [ 'Received', "from a (b $bad) by c" ] ] );
         is( [ @$only{qw{helo derived}} ], [ 'unknown', 'mail_from,rcpt_to,helo,client_ip' ], "$bad is no client address" );
         ok( !defined $only->{client_ip}, "$bad gives no client_ip" );
