@@ -1,33 +1,81 @@
-# Troglodyne perlcritic policy
+# Troglodyne perlcritic policy, for a distribution that runs on whatever perl is
+# already installed: use 5.014, and never lower.
+#
+# There are two of these.  perlcriticrc is for code that runs on a perl you
+# control; this one is for code that does not.  The packaging-perl skill asks
+# which you are writing before it copies one, because the answer decides more
+# than this file: it decides the use line in every module and test, and perl: in
+# prereqs.yml.
+#
+# The difference is the five policies below.  The other profile leaves them out
+# because a modern perl refuses what they report, and none of that reasoning
+# survives down here: without them a bareword filehandle in this distribution is
+# caught by nothing at all.  Each says the version that makes it redundant:
+#
+#   TestingAndDebugging::RequireUseStrict       strict is on from 5.012
+#   Objects::ProhibitIndirectSyntax             no indirect from 5.036
+#   InputOutput::ProhibitBarewordFileHandles    no bareword_filehandles from
+#   InputOutput::ProhibitBarewordDirHandles       5.038
+#   Modules::RequireEndWithOne                  module_true from 5.038
+#
+# One policy of the other profile is not here: Subroutines::
+# ProhibitUnderscorePrivateSubs.  It wants a private sub to be my sub, which
+# arrived in 5.026, and below that a closure, my $name = sub.  But Subroutines::
+# ProhibitSingleUseLexicalSubs refuses a closure that one place calls, so on
+# 5.014 the two leave a helper no form but a public package sub, which then
+# needs POD.  A leading underscore is the one form left that is private by
+# name and works here.
+#
+# 5.014 is the floor rather than anything lower because RegularExpressions::
+# RequireDefault below wants /aa on every pattern, and /aa arrived in 5.14.  A
+# lower declaration is one the code does not keep.
+#
+# What this profile cannot tell you is whether the perl you are aiming at has
+# the modules you are using.  Ubuntu 24.04 ships 5.38, and 22.04 ships 5.34.
 severity  = 1
 only      = 1
 force     = 0
 verbose   = 1
-#theme     = 
-#include   =
-#exclude   =
 criticism-fatal = 1
 color     = 1
 allow-unsafe = 1
+
+# The five the other profile leaves out because use 5.040 makes them
+# unnecessary.  Nothing here declares that, so each of them earns its place.
+[TestingAndDebugging::RequireUseStrict]
+[Objects::ProhibitIndirectSyntax]
+[InputOutput::ProhibitBarewordFileHandles]
+[InputOutput::ProhibitBarewordDirHandles]
+[Modules::RequireEndWithOne]
 # Usability
 [Modules::RequirePerlVersion]
 [Documentation::RequirePod]
 # Security
 [ValuesAndExpressions::PreventSQLInjection]
-; [CodeLayout::RequireASCII] is not here on purpose.  Every file declares
-; use 5.041, which turns on source::encoding "ascii" and makes a non-ASCII
-; character in code a compile error -- stricter than the policy, and not
-; skippable.  The policy also applies to POD, where the only thing it ever
-; caught was a contributor's name in the section Dist::Zilla generates, and
-; spelling somebody's name wrong is not a code standard.
+# It also applies to POD, where the only thing it tends to catch is a
+# contributor's name in the section Dist::Zilla generates.  Spelling somebody's
+# name wrong is not a code standard, so an exemption there is fair.
+[CodeLayout::RequireASCII]
 [RegularExpressions::RequireDefault]
 strict = 1
+[RegularExpressions::PreventUselessMetacharacterEscapes]
+# A pattern written as a string loses the modifiers that RequireDefault asks for.
+[RegularExpressions::ProhibitRegexInStrings]
 # PEBCAK catches
 [BuiltinFunctions::ProhibitDeleteOnArrays]
 [Subroutines::ProhibitAmbiguousFunctionCalls]
 [ValuesAndExpressions::ProhibitSingleArgArraySlice]
+[ValuesAndExpressions::ProhibitDefinedBeforeLength]
+[Variables::ProhibitUselessVarClearing]
+[Subroutines::ProhibitTailRecursion]
+[ValuesAndExpressions::ProhibitDescendingRanges]
 [Bangs::ProhibitUselessRegexModifiers]
+[RegularExpressions::ProhibitIneffectiveModifiers]
+# The @example tag of a blurb that Pod::Coverage::More::Blurb reads is code in a
+# comment on purpose: the generated POD shows it as the example of the sub.
+# The pattern is the default of the policy, anchored, and refusing those lines.
 [Bangs::ProhibitCommentedOutCode]
+commentedcoderegex = \A(?!\#\s*\@example\b).*\$[A-Za-z_].*=
 [Tics::ProhibitUseBase]
 [Plicease::ProhibitLeadingZeros]
 [RegularExpressions::ProhibitEmptyAlternatives]
@@ -43,14 +91,38 @@ strict = 1
 warn_level = 40
 info_level = 30
 [Variables::ProhibitUselessInitialization]
+[ValuesAndExpressions::RequireSlices]
 [PreferredModules]
 config = .preferred_modules.ini
 [logicLAB::RequireSheBang]
-formats = #!/usr/bin/env perl
+formats = #!perl
 # Performance
 [logicLAB::ProhibitShellDispatch]
 [ProhibitPipeOpen]
 [Performance::ProhibitRegexForSimpleSubstring]
+[RegularExpressions::ProhibitRegexToStripAffix]
+[RegularExpressions::ProhibitRegexToChomp]
+[RegularExpressions::ProhibitRegexToSplitAtDelimiter]
+[BuiltinFunctions::ProhibitChainingSameListSub]
+[RegularExpressions::ProhibitRegexForStringEquality]
+[Subroutines::ProhibitSingleUseLexicalSubs]
+[ValuesAndExpressions::ProhibitLiteralArithmetic]
+[BuiltinFunctions::ProhibitIndirectBooleanGrep]
+# What ProhibitMutatingListFunctions reports, which this replaces, and a block
+# that changes $_ through a sub that it calls.  Its two call reports stay off,
+# because the policy below reports the same calls.
+[ControlStructures::ProhibitMutatingListFunctionsStricter]
+# A call that it cannot read, a method or a sub from elsewhere, while $_ is the
+# caller's element: in a list function block before local ($_) = $_, and
+# before a postfix for.
+[Variables::ProhibitCallsWithAliasedTopic]
+# An if, elsif, else or unless whose block holds no statement, a comment
+# being none.  Loops are left alone, because a loop condition can do the work.
+[ControlStructures::ProhibitEmptyConditionalBlocks]
+# A sub that returns the result of a syscall or an eval, called where nothing
+# looks at the result.  The same functions as RequireCheckedSyscalls below.
+[ErrorHandling::RequireCheckedIndirectResults]
+exclude_functions = print
 [ProhibitUseLib]
 [ProhibitUsageSubs]
 [RequireQwForLiteralLists]
@@ -58,17 +130,176 @@ formats = #!/usr/bin/env perl
 [RequireFatalWarnings]
 [ProhibitUnusedImports]
 # Modules imported for a side effect rather than for a symbol, which the policy
-# cannot see.  `re` is here because every file says `use re '/aa'`.  Add your
-# own: IO::Prompter installs prompt() from a custom import rather than @EXPORT,
-# and anything loaded by name from a string is invisible the same way.
-# Exporter is imported for its import(), and Test2::Plugin::NoWarnings for the
-# test it adds at the end of the run.
-allow = re Exporter Test2::Plugin::NoWarnings
+# cannot see.  Its built-in list has the pragmas, re, Test::NoWarnings,
+# Test2::Plugin::NoWarnings and Mojo::Base.  Add your own with an override of
+# allow in .conformance.yml, such as a module that another one loads by the name
+# you give it in a string: Text::Xslate takes its bridge as module => [...].
+# Off in a distribution that is only a library: it counts calls from bin/ and
+# lib/, and every sub a library exists to offer is called from neither -- a
+# module with one public sub and no bin/ reports that sub, which is the policy
+# working correctly and saying nothing.  Turn it on for a distribution that also
+# ships programs, and add the authordep line to dist.ini when you do.
+#
+# allow_subs then lists the subs that are called in a way it cannot see: named
+# in a string and called as $obj->$name, handed to something else that calls
+# them, or called only from a directory it does not read.  Name each one and say
+# which, so the next person can tell an exemption from an oversight.
+#
+# [ProhibitUnusedDefinitions]
+# allow_subs =
+# A sub that only one subclass uses, and a sub that two subclasses define where
+# the class above them defines none.  It reads bin/ and lib/ through
+# Perl::Critic::Distribution, as ProhibitUnusedDefinitions does, so the two
+# share one parse.  A library whose subclasses live in other distributions
+# names in allow_subs each hook that only one of its own subclasses uses.
+[ProhibitMisplacedMethods]
+[ProhibitPrintSTDERR]
+[InputOutput::ProhibitRepeatedPrints]
+# Perl::Critic's own policies.  only = 1 loads nothing that is not named, so
+# each of these has to be, and the ones that are absent are absent on purpose.
+#
+# Not here, because something above already does the job better:
+#   CodeLayout::ProhibitQuotedWordLists         RequireQwForLiteralLists
+#   ControlStructures::ProhibitCascadingIfElse  CognitiveComplexity, which
+#   ControlStructures::ProhibitDeepNests          scores nesting and every
+#   Subroutines::ProhibitExcessComplexity         break in flow, where these
+#                                                 count branches
+#   ControlStructures::ProhibitMutatingListFunctions
+#                                               ProhibitMutatingListFunctionsStricter,
+#                                                 which reports all of it, and
+#                                                 a sub that the block calls
+#   InputOutput::ProhibitBacktickOperators      logicLAB::ProhibitShellDispatch
+#   Modules::ProhibitEvilModules                PreferredModules
+#   Subroutines::ProhibitUnusedPrivateSubroutines  ProhibitUnusedDefinitions,
+#                                                 which counts calls from bin/
+#                                                 and lib/, private or not
+#   TestingAndDebugging::RequireUseWarnings     RequireFatalWarnings
+#   ValuesAndExpressions::ProhibitLeadingZeros  Plicease::ProhibitLeadingZeros
+#   Modules::RequireVersionVar                  [PkgVersion] in dist.ini
+#   ErrorHandling::RequireCarping               die with context, and
+#                                                 Carp::Always for the trace
+#
+# The five that the other profile leaves to the language are named at the top of
+# this one, because down here the language does not enforce them.
+#
+# Documentation::RequirePodSections is out as well: the sections it asks for are
+# the ones Pod::Weaver writes at build, and weaver.ini names them AUTHORS and
+# COPYRIGHT AND LICENSE where the policy wants AUTHOR and LICENSE AND COPYRIGHT.
+[BuiltinFunctions::ProhibitBooleanGrep]
+[BuiltinFunctions::ProhibitLvalueSubstr]
+[BuiltinFunctions::ProhibitReverseSortBlock]
+[BuiltinFunctions::ProhibitShiftRef]
+[BuiltinFunctions::ProhibitSleepViaSelect]
+[BuiltinFunctions::ProhibitStringyEval]
+[BuiltinFunctions::ProhibitStringySplit]
+[BuiltinFunctions::ProhibitUniversalCan]
+[BuiltinFunctions::ProhibitUniversalIsa]
+[BuiltinFunctions::ProhibitVoidGrep]
+[BuiltinFunctions::ProhibitVoidMap]
+[BuiltinFunctions::RequireBlockGrep]
+[BuiltinFunctions::RequireBlockMap]
+[BuiltinFunctions::RequireGlobFunction]
+[BuiltinFunctions::RequireSimpleSortBlock]
+[ClassHierarchies::ProhibitAutoloading]
+[ClassHierarchies::ProhibitExplicitISA]
+[ClassHierarchies::ProhibitOneArgBless]
+[CodeLayout::ProhibitHardTabs]
+[CodeLayout::ProhibitTrailingWhitespace]
+[CodeLayout::RequireConsistentNewlines]
+# [CodeLayout::RequireTidyCode] is off on purpose.  git-hooks/pre-commit runs
+# perltidy over every staged Perl file before it runs this profile, so every
+# commit is tidy whatever this policy would say.  In an editor, the policy only
+# repeated that, and ran perltidy over the whole file on every check.
+[CodeLayout::RequireTrailingCommas]
+[ControlStructures::ProhibitLabelsWithSpecialBlockNames]
+[ControlStructures::ProhibitNegativeExpressionsInUnlessAndUntilConditions]
+[ControlStructures::ProhibitUnreachableCode]
+[ControlStructures::ProhibitUntilBlocks]
+[ControlStructures::ProhibitYadaOperator]
+[Documentation::PodSpelling]
+spell_command = aspell --lang=en_US list
+stop_words_file = .pod_stopwords
+[Documentation::RequirePackageMatchesPodName]
+[ErrorHandling::RequireCheckingReturnValueOfEval]
+[InputOutput::ProhibitExplicitStdin]
+[InputOutput::ProhibitInteractiveTest]
+[InputOutput::ProhibitJoinedReadline]
+[InputOutput::ProhibitOneArgSelect]
+[InputOutput::ProhibitReadlineInForLoop]
+[InputOutput::ProhibitTwoArgOpen]
+[InputOutput::RequireBracedFileHandleWithPrint]
+[InputOutput::RequireBriefOpen]
+[InputOutput::RequireCheckedOpen]
+[InputOutput::RequireCheckedSyscalls]
+exclude_functions = print
+[InputOutput::RequireEncodingWithUTF8Layer]
+[Miscellanea::ProhibitFormats]
+[Miscellanea::ProhibitTies]
+[Miscellanea::ProhibitUnrestrictedNoCritic]
+[Miscellanea::ProhibitUselessNoCritic]
+[Modules::ProhibitAutomaticExportation]
+[Modules::ProhibitConditionalUseStatements]
+[Modules::RequireBarewordIncludes]
+[Modules::RequireFilenameMatchesPackage]
+[Modules::RequireNoMatchVarsWithUseEnglish]
+[NamingConventions::Capitalization]
+[RegularExpressions::ProhibitCaptureWithoutTest]
+[RegularExpressions::ProhibitComplexRegexes]
+[RegularExpressions::ProhibitEnumeratedClasses]
+[RegularExpressions::ProhibitFixedStringMatches]
+[RegularExpressions::ProhibitSingleCharAlternation]
+[RegularExpressions::ProhibitUnusedCapture]
+[RegularExpressions::RequireBracesForMultiline]
+[RegularExpressions::RequireDotMatchAnything]
+[RegularExpressions::RequireExtendedFormatting]
+[Subroutines::ProhibitAmpersandSigils]
+[Subroutines::ProhibitBuiltinHomonyms]
+[Subroutines::ProhibitManyArgs]
+[Subroutines::ProhibitNestedSubs]
+[Subroutines::ProhibitReturnSort]
+[Subroutines::ProhibitSubroutinePrototypes]
+[Subroutines::ProtectPrivateSubs]
+[Subroutines::RequireArgUnpacking]
+[Subroutines::RequireFinalReturn]
+[TestingAndDebugging::ProhibitProlongedStrictureOverride]
+[TestingAndDebugging::RequireTestLabels]
+[ValuesAndExpressions::ProhibitCommaSeparatedStatements]
+[ValuesAndExpressions::ProhibitComplexVersion]
+[ValuesAndExpressions::ProhibitEscapedCharacters]
+[ValuesAndExpressions::ProhibitLongChainsOfMethodCalls]
+[ValuesAndExpressions::ProhibitMismatchedOperators]
+[ValuesAndExpressions::ProhibitMixedBooleanOperators]
+[ValuesAndExpressions::ProhibitQuotesAsQuotelikeOperatorDelimiters]
+[ValuesAndExpressions::ProhibitSpecialLiteralHeredocTerminator]
+[ValuesAndExpressions::ProhibitVersionStrings]
+[ValuesAndExpressions::RequireConstantVersion]
+[ValuesAndExpressions::RequireQuotedHeredocTerminator]
+[ValuesAndExpressions::RequireUpperCaseHeredocTerminator]
+[Variables::ProhibitAugmentedAssignmentInDeclaration]
+[Variables::ProhibitConditionalDeclarations]
+# Variables::ProhibitEvilVariables is not listed: it declines to load until it
+# is given variables to prohibit, and nobody has named any.
+[Variables::ProhibitLocalVars]
+[Variables::ProhibitMatchVars]
+[Variables::ProhibitPerl4PackageNames]
+[Variables::ProhibitReusedNames]
+# Stricter than the core ProhibitUnusedVariables, which reports only a bare
+# `my $x;` and misses a variable that is assigned and never read.
+[Variables::ProhibitUnusedVarsStricter]
+# A method takes the arguments of its interface, whether it reads them or not.
+allow_unused_subroutine_arguments = 1
+# Anything that returns a guard, which does its work by being held to the end of
+# its scope: a mock, a mocked file, or a change of directory that File::pushd
+# undoes when the object goes.
+allow_if_computed_by = Test::MockModule->new Test::MockFile->file Test::MockFile->file_from_disk Test::MockFile->symlink Test::MockFile->dir Test::MockFile->new_dir pushd tempd
+[Variables::ProtectPrivateVars]
+[Variables::RequireLexicalLoopIterators]
+# A block foreach with no loop variable, whose $_ the body can clobber.
+[Variables::ProhibitTopicIterator]
+[Variables::RequireLocalizedPunctuationVars]
+[Variables::RequireNegativeIndices]
+# A read through a missing level, such as $h{a}{b}, creates $h{a}.  Write
+# no autovivification; in the scope, which [AutoPrereqs] then declares.
+[Variables::RequireNoAutovivification]
 # Extensions to perl -c
 [CompileTime]
-# Good idea, but module doesn't install due to bad testsuite...we'll have to fork
-#[Dynamic::ValidateAgainstSymbolTable]
-#at_inc_suffix=lib
-#inspect_required_modules=1
-#inspect_autoloaders=1
-#max_recursion=2
