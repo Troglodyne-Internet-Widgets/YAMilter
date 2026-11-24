@@ -6,6 +6,7 @@ use 5.014;
 use strict;
 use warnings FATAL => 'all';
 use re '/aa';
+no autovivification;
 
 use DBI;
 use Digest::SHA qw{sha256_hex};
@@ -346,15 +347,21 @@ sub new {
     $dbh->do('PRAGMA journal_mode = WAL');
     $dbh->do('PRAGMA synchronous = NORMAL');
     $dbh->do('PRAGMA foreign_keys = ON');
-    $dbh->do($_) for @SCHEMA;
+    foreach my $statement (@SCHEMA) {
+        $dbh->do($statement);
+    }
 
     # Databases made before results recorded the deciding recipe
     my %results = map { $_->[1] => 1 } @{ $dbh->selectall_arrayref('PRAGMA table_info(results)') };
     $dbh->do('ALTER TABLE results ADD COLUMN recipe TEXT') unless $results{recipe};
 
     # View names and bodies are the constants in %VIEWS; identifiers cannot be bound
-    $dbh->do("DROP VIEW IF EXISTS $_")       for reverse @VIEW_ORDER;    ## no critic (ValuesAndExpressions::PreventSQLInjection)
-    $dbh->do("CREATE VIEW $_ AS $VIEWS{$_}") for @VIEW_ORDER;            ## no critic (ValuesAndExpressions::PreventSQLInjection)
+    foreach my $view ( reverse @VIEW_ORDER ) {
+        $dbh->do("DROP VIEW IF EXISTS $view");    ## no critic (ValuesAndExpressions::PreventSQLInjection)
+    }
+    foreach my $view (@VIEW_ORDER) {
+        $dbh->do("CREATE VIEW $view AS $VIEWS{$view}");    ## no critic (ValuesAndExpressions::PreventSQLInjection)
+    }
 
     return bless( { %args, dbh => $dbh }, $class );
 }
@@ -365,7 +372,10 @@ The L<DBI> handle on the corpus database.
 
 =cut
 
-sub dbh { $_[0]->{dbh} }
+sub dbh {
+    my ($self) = @_;
+    return $self->{dbh};
+}
 
 =head1 METHODS
 
@@ -432,7 +442,7 @@ sub _found {
     my ( $self, $root, $path ) = @_;
 
     if ( -d $path ) {
-        my ($leaf) = $path =~ m{([^/]+)\z};
+        my ($leaf) = $path =~ m{([^/]+)\z}sx;
 
         # Maildir internals, and dovecot's index directories, are never folders themselves
         if ( $path ne $root && ( any { $leaf eq $_ } qw{cur new tmp .imap} ) ) {
@@ -447,9 +457,10 @@ sub _found {
     return unless -s $path;
     open( my $fh, '<', $path ) or return;
     read( $fh, my $magic, 5 );
-    close $fh;
+    close($fh) or return;
     return unless defined $magic && $magic eq 'From ';
     $self->_index_mbox( $root, $path );
+    return;
 }
 
 sub _folder_name {
@@ -464,14 +475,14 @@ sub _index_maildir {
 
     foreach my $sub (qw{cur new}) {
         opendir( my $dh, "$dir/$sub" ) or next;
-        foreach my $file ( sort grep { !m/^\./ } readdir($dh) ) {
+        foreach my $file ( sort grep { !m/^\./msx } readdir($dh) ) {
             my $path = "$dir/$sub/$file";
             my ( $size, $mtime ) = ( stat($path) )[ 7, 9 ];
             next if !defined $size || -d _;
             $self->{stats}{files}++;
 
             # The unique part of a Maildir name survives the renames that flag changes make
-            my ( $key, $flags ) = $file =~ m/^([^:]+)(?::2,(.*))?\z/;
+            my ( $key, $flags ) = $file =~ m/^([^:]+)(?::2,(.*))?\z/msx;
             $flags //= '';
 
             my $known = $self->{known}{"$folder\0$key"};
@@ -509,7 +520,7 @@ sub _index_mbox {
 
     my ($known) = $dbh->selectrow_array( 'SELECT 1 FROM mbox_files WHERE source = ? AND folder = ? AND size = ? AND mtime = ?', undef, $self->{source}, $folder, $size, $mtime );
     if ($known) {
-        my $n = $dbh->do( 'UPDATE locations SET scan = ? WHERE source = ? AND folder = ?', undef, $self->{scan}, $self->{source}, $folder );
+        my $n = $dbh->do( 'UPDATE locations SET scan = ? WHERE source = ? AND folder = ?', undef, @$self{qw{scan source}}, $folder );
         $self->{stats}{files}   += $n;
         $self->{stats}{skipped} += $n;
         $self->_tick();
@@ -535,13 +546,13 @@ sub _index_mbox {
 
         # The range includes the From_ separator line, and the blank line before the next one
         my $offset = $begin;
-        if ( $raw =~ s/\AFrom [^\n]*\n// ) {
+        if ( $raw =~ s/\AFrom\ [^\n]*\n//sx ) {
             $offset += $+[0];
         }
-        $raw =~ s/\n\n\z/\n/;
+        $raw =~ s/\n\n\z/\n/sx;
 
         # UW-IMAP keeps folder metadata in a fake first message
-        next if $raw =~ m/^X-IMAP(?:base)?:/mi && index( $raw, 'FOLDER INTERNAL DATA' ) >= 0;
+        next if $raw =~ m/^X-IMAP(?:base)?:/msix && index( $raw, 'FOLDER INTERNAL DATA' ) >= 0;
 
         $self->{stats}{files}++;
         $self->_store(
@@ -604,9 +615,9 @@ sub _store_headers {
     my $pos = 0;
     foreach my $field (@$fields) {
         my ( $name, $value ) = @$field;
-        $value =~ s/\n(?=[ \t])//g;
+        $value =~ s/\n(?=[ \t])//gsx;
         my $decoded;
-        if ( $value =~ m/=\?[^?]+\?[bqBQ]\?/ ) {
+        if ( $value =~ m/=\?[^?]+\?[bqBQ]\?/sx ) {
             $decoded = eval { Encode::encode( 'UTF-8', Encode::decode( 'MIME-Header', $value ) ) };
         }
         $sth->execute( $id, $pos++, lc($name), $value, $decoded );
@@ -642,6 +653,7 @@ sub read_bytes {
     };
     seek( $fh, $offset, SEEK_SET );
     my $got = read( $fh, my $buf, $length );
+    close($fh) or warn "Could not close $path: $!\n";
     return unless defined $got && $got == $length;
     return $buf;
 }
@@ -679,7 +691,7 @@ sub derive_envelope {
     foreach my $field (@$fields) {
         my $name  = lc( $field->[0] );
         my $value = $field->[1];
-        $value =~ s/\n(?=[ \t])//g;
+        $value =~ s/\n(?=[ \t])//gsx;
         push @received, $value if $name eq 'received';
         $first{$name} //= $value;
     }
@@ -687,7 +699,7 @@ sub derive_envelope {
     my ( %env, @derived );
 
     if ( defined $first{'return-path'} ) {
-        ( $env{mail_from} ) = $first{'return-path'} =~ m/<([^>]*)>/;
+        ( $env{mail_from} ) = $first{'return-path'} =~ m/<([^>]*)>/sx;
         $env{mail_from} //= _first_address( $first{'return-path'} ) // '';
     }
     else {
@@ -702,8 +714,8 @@ sub derive_envelope {
     }
 
     foreach my $received (@received) {
-        my ( $helo, $comment ) = $received          =~ m/^\s*from\s+(\S+)\s*(?:\(([^)]*)\))?/i        or next;
-        my ( $host, $ip )      = ( $comment // '' ) =~ m/([^\s\[]*)\s*\[(?:IPv6:)?([0-9A-Fa-f:.]+)\]/ or next;
+        my ( $helo, $comment ) = $received          =~ m/^\s*from\s+(\S+)\s*(?:\(([^)]*)\))?/msix      or next;
+        my ( $host, $ip )      = ( $comment // '' ) =~ m/([^\s\[]*)\s*\[(?:IPv6:)?([\dA-Fa-f:.]+)\]/sx or next;
         next unless is_public_ip($ip);
         @env{qw{helo client_ip client_host}} = ( $helo, $ip, $host || undef );
         last;
@@ -781,7 +793,7 @@ Returns the run id.  A run with no batch is its own batch.
 sub start_run {
     my ( $self, %args ) = @_;
     my $dbh = $self->dbh();
-    $dbh->do( 'INSERT INTO runs (batch, label, config, recipes, started) VALUES (?, ?, ?, ?, ?)', undef, $args{batch}, $args{label}, $args{config}, $args{recipes}, time );
+    $dbh->do( 'INSERT INTO runs (batch, label, config, recipes, started) VALUES (?, ?, ?, ?, ?)', undef, @args{qw{batch label config recipes}}, time );
     my $id = $dbh->last_insert_id( '', '', 'runs', 'id' );
     $dbh->do( 'UPDATE runs SET batch = ? WHERE id = ?', undef, $id, $id ) unless $args{batch};
     return $id;
@@ -798,7 +810,9 @@ sub record_results {
     my $dbh = $self->dbh();
     my $sth = $dbh->prepare_cached('INSERT OR REPLACE INTO results (run_id, message_id, code, action, reply, modifications, elapsed_ms) VALUES (?, ?, ?, ?, ?, ?, ?)');
     $dbh->begin_work();
-    $sth->execute( $run, @$_{qw{message_id code action reply modifications elapsed_ms}} ) for @results;
+    foreach my $result (@results) {
+        $sth->execute( $run, @$result{qw{message_id code action reply modifications elapsed_ms}} );
+    }
     $dbh->commit();
     return scalar(@results);
 }
@@ -814,7 +828,9 @@ sub record_recipes {
     my $dbh = $self->dbh();
     my $sth = $dbh->prepare_cached('UPDATE results SET recipe = ? WHERE run_id = ? AND message_id = ?');
     $dbh->begin_work();
-    $sth->execute( $recipes->{$_}, $run, $_ ) for keys %$recipes;
+    foreach my $message_id ( keys %$recipes ) {
+        $sth->execute( $recipes->{$message_id}, $run, $message_id );
+    }
     $dbh->commit();
     return scalar( keys %$recipes );
 }
@@ -962,14 +978,14 @@ sub describe {
 
     my $runs = sub {
         my @ids = @_;
-        return join(
-            '; ',
-            map {
-                my ( $label, $recipes ) = $dbh->selectrow_array( 'SELECT label, recipes FROM runs WHERE id = ?', undef, $_ );
-                my $names = join( ', ', sort keys %{ Cpanel::JSON::XS->new->decode( $recipes // '{}' ) } );
-                "run $_" . ( length( $label // '' ) ? qq{ "$label"} : '' ) . " ($names)";
-            } @ids
-        );
+        my @described;
+        foreach my $id (@ids) {
+            my ( $label, $recipes ) = $dbh->selectrow_array( 'SELECT label, recipes FROM runs WHERE id = ?', undef, $id );
+            $label //= '';
+            my $names = join( ', ', sort keys %{ Cpanel::JSON::XS->new->decode( $recipes // '{}' ) } );
+            push @described, "run $id" . ( $label ne '' ? qq{ "$label"} : '' ) . " ($names)";
+        }
+        return join( '; ', @described );
     };
     my ($ignored) = $dbh->selectrow_array('SELECT COUNT(*) FROM (SELECT message_id FROM ignored_messages)');
     my ($rules)   = $dbh->selectrow_array('SELECT COUNT(*) FROM ignores');
@@ -1055,7 +1071,9 @@ sub query {
     my ( $self, $sql, @bind ) = @_;
     my $sth = $self->dbh->prepare($sql);
     if ( @bind == 1 && ref $bind[0] eq 'HASH' ) {
-        $sth->bind_param( $_, $bind[0]{$_} ) for keys( %{ $bind[0] } );
+        foreach my $name ( keys( %{ $bind[0] } ) ) {
+            $sth->bind_param( $name, $bind[0]{$name} );
+        }
         $sth->execute();
     }
     else {

@@ -85,13 +85,13 @@ our %cb = (
 
 sub envfrom {
     my ( $ctx, $sender ) = @_;
-    _state( $ctx, { sender => _envelope_address($sender), recipients => [], from => [], to => [] } );
+    _envelope_state( $ctx, { sender => _envelope_address($sender), recipients => [], from => [], to => [] } );
     return __PACKAGE__->cont();
 }
 
 sub envrcpt {
     my ( $ctx, $recipient ) = @_;
-    push @{ _state($ctx)->{recipients} }, _envelope_address($recipient);
+    push @{ _envelope_state($ctx)->{recipients} }, _envelope_address($recipient);
     return __PACKAGE__->cont();
 }
 
@@ -104,13 +104,15 @@ my %KEPT = (
 sub header {
     my ( $ctx, $name, $value ) = @_;
     my $kept = $KEPT{ lc $name } or return __PACKAGE__->cont();
-    push @{ _state($ctx)->{$kept} }, map { lc $_->address } Mail::Address->parse($value);
+    foreach my $address ( Mail::Address->parse($value) ) {
+        push @{ _envelope_state($ctx)->{$kept} }, lc $address->address;
+    }
     return __PACKAGE__->cont();
 }
 
 sub eoh {
     my ($ctx) = @_;
-    my $state = _state($ctx);
+    my $state = _envelope_state($ctx);
     my $debug = __PACKAGE__->config()->{debug};
 
     return __PACKAGE__->cont() if $state->{sender} eq '';
@@ -128,7 +130,7 @@ sub eoh {
     return __PACKAGE__->cont();
 }
 
-sub _state {
+sub _envelope_state {
     my ( $ctx, $fresh ) = @_;
     return __PACKAGE__->stash( $ctx, $fresh ) // __PACKAGE__->stash( $ctx, { sender => '', recipients => [], from => [], to => [] } );
 }
@@ -137,7 +139,7 @@ sub _state {
 sub _envelope_address {
     my ($arg) = @_;
     $arg //= '';
-    $arg =~ s/\A\s*<?|>?\s*\z//g;
+    $arg =~ s/\A\s*<?|>?\s*\z//gsx;
     return lc $arg;
 }
 

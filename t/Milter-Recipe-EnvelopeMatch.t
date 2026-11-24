@@ -2,6 +2,7 @@ use 5.014;
 use strict;
 use warnings FATAL => 'all';
 use re '/aa';
+no autovivification;
 
 use FindBin::libs;
 use Cwd;
@@ -43,8 +44,12 @@ sub transaction {
     my ( $ctx, $sender, $recipients, %headers ) = @_;
     my %cb = %Milter::Recipe::EnvelopeMatch::cb;
     $cb{envfrom}->( $ctx, $sender, 'SIZE=100' );
-    $cb{envrcpt}->( $ctx, $_ ) for @$recipients;
-    $cb{header}->( $ctx, $_, $headers{$_} ) for sort keys %headers;
+    foreach my $recipient (@$recipients) {
+        $cb{envrcpt}->( $ctx, $recipient );
+    }
+    foreach my $name ( sort keys %headers ) {
+        $cb{header}->( $ctx, $name, $headers{$name} );
+    }
     my $res = $cb{eoh}->($ctx);
     return ( $res, delete $ctx->{reply} );
 }
@@ -87,13 +92,16 @@ subtest 'in yamilter' => sub {
         [SMFIC_BODYEOB],
         [SMFIC_QUIT],
     );
-    my @forged = map { $_->[0] eq SMFIC_HEADER && $_->[1] eq 'From' ? [ SMFIC_HEADER, 'From', 'someone.else@test.test' ] : $_ } @commands;
+    my @forged;
+    foreach my $command (@commands) {
+        push @forged, ( $command->[0] eq SMFIC_HEADER && $command->[1] eq 'From' ) ? [ SMFIC_HEADER, 'From', 'someone.else@test.test' ] : $command;
+    }
 
     my $converse = sub {
         my ( $action, @cmds ) = @_;
         my $milter = Milter::Harness->new( script => "$run_dir/bin/yamilter", config => config($action) );
         $milter->start();
-        my @res = Milter::Client::sendmail( $milter->connect(), { timeout => 5 }, @cmds );
+        my @res = Milter::Client::sendmail( $milter->connection(), { timeout => 5 }, @cmds );
         my $log = $milter->stop();
         return ( @res[ 0, 1 ], $log );
     };
@@ -109,6 +117,8 @@ subtest 'in yamilter' => sub {
 };
 
 done_testing();
+
+1;
 
 __END__
 

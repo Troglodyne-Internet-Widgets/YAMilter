@@ -74,6 +74,7 @@ sub getconfig {
 sub writeconfig {
     my $c = getconfig();
     $c->write( $c->param('service.f') );
+    return;
 }
 
 sub getsock {

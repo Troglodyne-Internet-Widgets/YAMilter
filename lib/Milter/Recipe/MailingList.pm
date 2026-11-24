@@ -6,6 +6,7 @@ use 5.014;
 use strict;
 use warnings FATAL => 'all';
 use re '/aa';
+no autovivification;
 
 use parent qw{Milter::Recipe};
 
@@ -132,36 +133,36 @@ my %CANONICAL = map { lc($_) => $_ } @RFC2369, qw{List-Id List-Unsubscribe-Post}
 
 sub envfrom {
     my ( $ctx, $sender ) = @_;
-    my ($domain) = ( $sender // '' ) =~ m/\@([^\s>]+)/;
-    _state( $ctx, { lists => {}, auth => [], sender_domain => lc( $domain // '' ) } );
+    my ($domain) = ( $sender // '' ) =~ m/\@([^\s>]+)/sx;
+    _list_state( $ctx, { lists => {}, auth => [], sender_domain => lc( $domain // '' ) } );
     return __PACKAGE__->cont();
 }
 
 sub header {
     my ( $ctx, $name, $value ) = @_;
     my $lc = lc $name;
-    $value =~ s/\r?\n(?=[ \t])//g;
+    $value =~ s/\r?\n(?=[\ \t])//gsx;
     if ( $CANONICAL{$lc} ) {
-        push @{ _state($ctx)->{lists}{$lc} }, $value;
+        push @{ _list_state($ctx)->{lists}{$lc} }, $value;
     }
     elsif ( $lc eq 'authentication-results' ) {
-        push @{ _state($ctx)->{auth} }, $value;
+        push @{ _list_state($ctx)->{auth} }, $value;
     }
     elsif ( $lc eq 'received-spf' ) {
-        _state($ctx)->{received_spf} //= $value;
+        _list_state($ctx)->{received_spf} //= $value;
     }
     return __PACKAGE__->cont();
 }
 
 sub eoh {
     my ($ctx) = @_;
-    my $state = _state($ctx);
+    my $state = _list_state($ctx);
     my $conf  = __PACKAGE__->config();
     my %lists = %{ $state->{lists} };
 
     if ( _trusted( $conf, \%lists, $state ) ) {
         warn "Mail from a trusted list, accepting" if $conf->{debug};
-        return __PACKAGE__->accept();
+        return __PACKAGE__->accept_mail();
     }
 
     foreach my $lc ( sort keys %lists ) {
@@ -172,7 +173,7 @@ sub eoh {
         }
     }
 
-    if ( $lists{'list-unsubscribe-post'} && !any { m{<\s*https://}i } @{ $lists{'list-unsubscribe'} || [] } ) {
+    if ( $lists{'list-unsubscribe-post'} && !any { m{<\s*https://}isx } @{ $lists{'list-unsubscribe'} || [] } ) {
         warn "List-Unsubscribe-Post without an https List-Unsubscribe, rejecting" if $conf->{debug};
         return __PACKAGE__->config_reply( $ctx, "List-Unsubscribe-Post without an https List-Unsubscribe (RFC 8058)" );
     }
@@ -189,7 +190,7 @@ sub eoh {
 
 sub eom {
     my ($ctx) = @_;
-    my $state = _state($ctx);
+    my $state = _list_state($ctx);
     my $conf  = __PACKAGE__->config();
     return __PACKAGE__->cont() if $state->{lists}{'list-unsubscribe'} || $conf->{no_accum};
 
@@ -222,7 +223,7 @@ sub _trusted {
     die "The MailingList recipe needs authserv_id configured to use allow\n" unless %ours;
 
     # The envelope sender is what yamilter was given, so it needs no vouching for, only its SPF result
-    return 1 if $conf->{allow_spf} && ( $state->{received_spf} // '' ) =~ m/\A\s*pass\b/i && length $state->{sender_domain} && _within( $list_id, $state->{sender_domain} );
+    return 1 if $conf->{allow_spf} && ( $state->{received_spf} // '' ) =~ m/\A\s*pass\b/isx && $state->{sender_domain} && _within( $list_id, $state->{sender_domain} );
 
     foreach my $header ( @{ $state->{auth} } ) {
         my ( $servid, @results ) = authentication_results($header);
@@ -230,12 +231,12 @@ sub _trusted {
         foreach my $result (@results) {
             next unless $result->{result} eq 'pass';
             if ( $result->{method} eq 'dkim' ) {
-                my $domain = $result->{props}{'header.d'} // ( $result->{props}{'header.i'} // '' ) =~ s/\A.*\@//r;
-                return 1 if length $domain && _within( $list_id, $domain );
+                my $domain = $result->{props}{'header.d'} // ( $result->{props}{'header.i'} // '' ) =~ s/\A.*\@//rsx;
+                return 1 if $domain && _within( $list_id, $domain );
             }
             if ( $result->{method} eq 'spf' && $conf->{allow_spf} ) {
-                my $domain = ( $result->{props}{'smtp.mailfrom'} // '' ) =~ s/\A.*\@//r;
-                return 1 if length $domain && _within( $list_id, $domain );
+                my $domain = ( $result->{props}{'smtp.mailfrom'} // '' ) =~ s/\A.*\@//rsx;
+                return 1 if $domain && _within( $list_id, $domain );
             }
         }
     }
@@ -244,11 +245,12 @@ sub _trusted {
 
 # Whether $name is $domain or under it
 sub _within {
-    my ( $name, $domain ) = map { lc } @_;
+    my ( $given_name, $given_domain ) = @_;
+    my ( $name,       $domain )       = ( lc $given_name, lc $given_domain );
     return $name eq $domain || substr( $name, -( length($domain) + 1 ) ) eq ".$domain";
 }
 
-sub _state {
+sub _list_state {
     my ( $ctx, $fresh ) = @_;
     return __PACKAGE__->stash( $ctx, $fresh ) // __PACKAGE__->stash( $ctx, { lists => {}, auth => [], sender_domain => '' } );
 }
@@ -265,13 +267,13 @@ Encoded words (RFC 2047) are not allowed in any of them, so they make a header m
 
 =cut
 
-my $URL = qr/<[A-Za-z][A-Za-z0-9+.\-]*:[^<>\s]+>/;
+my $URL = qr/<[[:alpha:]][[:alnum:]+.\-]*:[^<>\s]+>/sx;
 
 sub valid_list_header {
     my ( $name, $value ) = @_;
     my $lc = lc $name;
     my $v  = _uncomment($value);
-    $v =~ s/\A\s+|\s+\z//g;
+    $v =~ s/\A\s+|\s+\z//gsx;
 
     return defined list_id($value)            if $lc eq 'list-id';
     return $v eq 'List-Unsubscribe=One-Click' if $lc eq 'list-unsubscribe-post';
@@ -279,8 +281,8 @@ sub valid_list_header {
     return 1 if $lc eq 'list-post' && lc($v) eq 'no';
 
     # Whitespace inside the brackets is folding, and not part of the URL
-    $v =~ s/<([^<>]*)>/ '<' . ( $1 =~ s{\s+}{}gr ) . '>' /ge;
-    return $v =~ m/\A$URL(?:\s*,\s*$URL)*\z/ ? 1 : 0;
+    $v =~ s/<([^<>]*)>/ '<' . ( $1 =~ s{\s+}{}grsx ) . '>' /gesx;
+    return $v =~ m/\A$URL(?:\s*,\s*$URL)*\z/sx ? 1 : 0;
 }
 
 =head2 list_id($value)
@@ -290,14 +292,14 @@ or undef if the header is malformed.
 
 =cut
 
-my $ATEXT = qr{[A-Za-z0-9!#\$%&'*+/=?^_`{|}~\-]};
+my $ATEXT = qr{[[:alnum:]!#\$%&'*+/=?^_`{|}~\-]}sx;
 
 sub list_id {
     my ($value) = @_;
     my $v = _uncomment($value);
 
     # An optional phrase, which may hold encoded words, then the identifier in angle brackets
-    my ($id) = $v =~ m/\A[^<>]*<($ATEXT+(?:\.$ATEXT+)+)>\s*\z/;
+    my ($id) = $v =~ m/\A[^<>]*<($ATEXT+(?:\.$ATEXT+)+)>\s*\z/sx;
     return if !defined $id || length($id) > 255;
     return lc $id;
 }
@@ -312,16 +314,17 @@ Returns nothing for a header with no authserv-id.
 
 sub authentication_results {
     my ($value) = @_;
-    my ( $servid, @resinfo ) = split( qr/;/, _uncomment($value) );
-    ($servid) = ( $servid // '' ) =~ m/\A\s*(\S+)/ or return;
+    my ( $servid, @resinfo ) = split( qr/;/sx, _uncomment($value) );
+    ($servid) = ( $servid // '' ) =~ m/\A\s*(\S+)/sx or return;
 
+    my $token = qr{[\w\-]+}sx;
     my @results;
     foreach my $resinfo (@resinfo) {
-        my ( $method, $result, $rest ) = $resinfo =~ m{\A\s*([A-Za-z0-9\-_]+)(?:/\d+)?\s*=\s*([A-Za-z0-9\-_]+)(.*)\z}s or next;
+        my ( $method, $result, $rest ) = $resinfo =~ m{\A\s*($token)(?:/\d+)?\s*=\s*($token)(.*)\z}sx or next;
         my %props;
-        while ( $rest =~ m/([A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+)\s*=\s*("[^"]*"|[^\s;]+)/g ) {
+        while ( $rest =~ m/($token\.$token)\s*=\s*("[^"]*"|[^\s;]+)/gsx ) {
             my ( $prop, $pvalue ) = ( lc $1, $2 );
-            $pvalue =~ s/\A"|"\z//g;
+            $pvalue =~ s/\A"|"\z//gsx;
             $props{$prop} = $pvalue;
         }
         push @results, { method => lc $method, result => lc $result, props => \%props };
@@ -338,7 +341,7 @@ Whether any text part of a message (given as its header and body) has an unsubsc
 sub body_has_unsubscribe_link {
     my ( $header, $body ) = @_;
     my $raw = "$header\n$body";
-    $raw =~ s/\r\n/\n/g;
+    $raw =~ s/\r\n/\n/gsx;
 
     my @texts;
     my $ok = eval {
@@ -354,8 +357,8 @@ sub body_has_unsubscribe_link {
 
     # Mail too broken to take apart is looked at as it came
     if ( !$ok || !@texts ) {
-        my ($raw_body) = $raw =~ m/\n\n(.*)\z/s;
-        @texts = ( [ $raw_body // '', ( $raw_body // '' ) =~ m/<a\b/i ] );
+        my ($raw_body) = $raw =~ m/\n\n(.*)\z/sx;
+        @texts = ( [ $raw_body // '', ( $raw_body // '' ) =~ m/<a\b/isx ] );
     }
     return any { unsubscribe_link(@$_) } @texts;
 }
@@ -367,21 +370,23 @@ an http(s) or mailto link whose URL, anchor text, or the 100 or so characters be
 
 =cut
 
-my $UNSUB_URL   = qr/unsub|opt-?out/i;
-my $UNSUB_WORDS = qr/\b(?:unsubscribe|opt[\s-]?out)\b/i;
+my $UNSUB_URL   = qr/unsub|opt-?out/isx;
+my $UNSUB_WORDS = qr/\b(?:unsubscribe|opt[\s-]?out)\b/isx;
+my $HREF        = qr{"([^"]*)"|'([^']*)'|([^\s>]+)}sx;
+my $ANCHOR      = qr{<a\b[^>]*?\bhref\s*=\s*(?:$HREF)[^>]*>(.*?)</a\s*>}isx;
 
 sub unsubscribe_link {
     my ( $text, $is_html ) = @_;
     my @links;
     if ($is_html) {
-        while ( $text =~ m{<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>(.*?)</a\s*>}gis ) {
+        while ( $text =~ m{(?:$ANCHOR)}gsx ) {
             my ( $href, $inner, $start ) = ( $1 // $2 // $3, $4, $-[0] );
             my $before = _html_text( substr( $text, max( 0, $start - 1000 ), min( 1000, $start ) ) );
             push @links, [ $href, substr( $before, -100 ) . ' ' . _html_text($inner) ];
         }
     }
     else {
-        while ( $text =~ m{((?:https?://|mailto:)[^\s<>"]+)}gi ) {
+        while ( $text =~ m{((?:https?://|mailto:)[^\s<>"]+)}gisx ) {
             my ( $url, $start ) = ( $1, $-[0] );
             push @links, [ $url, substr( $text, max( 0, $start - 100 ), min( 100, $start ) ) ];
         }
@@ -391,10 +396,10 @@ sub unsubscribe_link {
 
 sub _html_text {
     my ($html) = @_;
-    $html =~ s/<[^>]*>/ /g;
-    $html =~ s/&nbsp;/ /gi;
-    $html =~ s/&amp;/&/gi;
-    $html =~ s/\s+/ /g;
+    $html =~ s/<[^>]*>/ /gsx;
+    $html =~ s/&nbsp;/ /gisx;
+    $html =~ s/&amp;/&/gisx;
+    $html =~ s/\s+/ /gsx;
     return $html;
 }
 
@@ -402,7 +407,7 @@ sub _html_text {
 sub _uncomment {
     my ($value) = @_;
     my $v = $value // '';
-    1 while $v =~ s/\((?:[^()\\]|\\.)*\)/ /g;
+    1 while $v =~ s/\((?:[^()\\]|\\.)*\)/ /gsx;
     return $v;
 }
 

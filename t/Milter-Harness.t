@@ -22,9 +22,9 @@ sub config {
     return write_file( "$tmp/yamilter.cfg", "[service]\nsock=$tmp/yamilter.sock\npidfile=$tmp/yamilter.pid\nworkers=1\n$recipes" );
 }
 
-like( dies { Milter::Harness->new( config => config('') ) },                    qr/script is required/,                          'script required' );
-like( dies { Milter::Harness->new( script => $yamilter ) },                     qr/config is required/,                          'config required' );
-like( dies { Milter::Harness->new( script => $yamilter, config => '/bogus' ) }, qr/Could not read configuration file \/bogus: /, 'config must exist' );
+like( dies { Milter::Harness->new( config => config('') ) },                    qr/script\ is\ required/sx,                             'script required' );
+like( dies { Milter::Harness->new( script => $yamilter ) },                     qr/config\ is\ required/sx,                             'config required' );
+like( dies { Milter::Harness->new( script => $yamilter, config => '/bogus' ) }, qr{Could\ not\ read\ configuration\ file\ /bogus:\ }sx, 'config must exist' );
 
 subtest 'start, connect, stop' => sub {
     write_file( "$tmp/yamilter.sock", 'stale' );
@@ -34,24 +34,26 @@ subtest 'start, connect, stop' => sub {
     ok( $milter->start(),   'started' );
     ok( -S $milter->sock(), '... in place of a stale file at the socket path' );
     ok( $milter->running(), 'running' );
-    like( dies { $milter->start() }, qr/already running/, 'cannot start twice' );
+    like( dies { $milter->start() }, qr/already\ running/sx, 'cannot start twice' );
 
-    my $sock = $milter->connect();
+    my $sock = $milter->connection();
     my ($code) = Milter::Client::sendmail( $sock, { timeout => 5 }, [ SMFIC_OPTNEG, 6, 0x1FF, 0x1FFFFF ], [ SMFIC_HELO, 'h.test.test' ] );
     is( $code, SMFIR_CONTINUE, 'milter answers on the connection' );
 
-    like( $milter->stop(), qr/YAMilter starting up.*Loaded milter modules: Language/s, 'stop returns what the milter printed' );
+    like( $milter->stop(), qr/YAMilter\ starting\ up.*Loaded\ milter\ modules:\ Language/sx, 'stop returns what the milter printed' );
     ok( !$milter->running(), 'stopped' );
     is( $milter->stop(), $milter->output(), 'stopping again is harmless' );
 };
 
 subtest 'milter which will not start' => sub {
     my $milter = Milter::Harness->new( script => $yamilter, config => config("[Bogus]\naction=reject\n") );
-    like( dies { $milter->start() }, qr/Milter exited before it was ready:.*Bogus/s, 'dies with what the milter printed' );
+    like( dies { $milter->start() }, qr/Milter\ exited\ before\ it\ was\ ready:.*Bogus/sx, 'dies with what the milter printed' );
     ok( !$milter->running(), 'not running' );
 };
 
 done_testing();
+
+1;
 
 __END__
 

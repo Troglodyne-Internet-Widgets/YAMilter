@@ -3,6 +3,7 @@ Revision history for Milter-Recipe
 1.001 2026-09-22 TEODESIAN
     - Add yamilter-corpus, Milter::Corpus and Milter::Corpus::Replay, to replay a pile of mail through recipes and report on the verdicts
     - Add Milter::Harness, to start and stop yamilter for tests
+    - Milter::Harness::connect is now connection, and Milter::Recipe::accept is now accept_mail, because perlcritic refuses a sub that has the name of a builtin
     - Milter::Client sends one SMFIC_HEADER per header (#1), sends the body raw and in chunks (#2), can report timeouts and EOF (#3), and returns modifications
     - Milter::Recipe accumulates header values, not only names (#4)
     - Milter::Recipe::config gives each recipe its own section, rather than whichever recipe asked first (#5)

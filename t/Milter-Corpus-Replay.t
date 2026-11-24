@@ -9,7 +9,7 @@ use Test2::V0;
 use Test2::Plugin::NoWarnings;
 
 use Milter::Corpus::Replay;
-use CorpusTest qw{fixture_corpus write_file};
+use CorpusTest qw{fixture_corpus read_file write_file};
 
 my $fx       = fixture_corpus();
 my $corpus   = $fx->{corpus};
@@ -19,7 +19,7 @@ my $yamilter = "$fx->{run_dir}/bin/yamilter";
 $corpus->index_source( $fx->{source} );
 
 subtest 'run' => sub {
-    like( dies { Milter::Corpus::Replay->new( corpus => $corpus, script => $yamilter, config => '/bogus' ) }, qr/Could not read configuration file \/bogus: /, 'missing configuration dies' );
+    like( dies { Milter::Corpus::Replay->new( corpus => $corpus, script => $yamilter, config => '/bogus' ) }, qr{Could\ not\ read\ configuration\ file\ /bogus:\ }sx, 'missing configuration dies' );
 
     my $cfg    = write_file( "$tmp/lang.cfg", "[Language]\nlangs=en\naction=defer\n" );
     my $replay = Milter::Corpus::Replay->new( corpus => $corpus, script => $yamilter, config => $cfg );
@@ -33,7 +33,7 @@ subtest 'run' => sub {
     is( scalar(@$rows),              5,          'every message replayed, across two jobs' );
     is( $got{'Quarterly report'}[1], 'accept',   'english mail accepted' );
     is( $got{'Ihre Bestellung'}[1],  'tempfail', 'german mail deferred' );
-    like( $got{'Ihre Bestellung'}[2], qr/^450 4\.7\.1 /, '... with the configured reply' );
+    like( $got{'Ihre Bestellung'}[2], qr/\A450\ 4\.7\.1\ /sx, '... with the configured reply' );
 
     ( undef, $rows ) = $corpus->query( q{SELECT h.value, r.recipe FROM results r JOIN headers h ON h.message_id = r.message_id AND h.name = 'subject' WHERE r.run_id = ? ORDER BY h.value}, $run );
     my %recipe = map { @$_ } @$rows;
@@ -44,20 +44,20 @@ subtest 'run' => sub {
     my ( $label, $config, $recipes, $finished, $log ) = @{ $rows->[0] };
     is( $label,  'english',                              'labelled' );
     is( $config, "[Language]\naction=defer\nlangs=en\n", 'the recipe configuration is kept, without the service section' );
-    like( $recipes, qr/^\{"Language":"[0-9a-f]{64}"\}\z/, 'with a hash of the recipe source' );
+    like( $recipes, qr/\A\{"Language":"[[:xdigit:]]{64}"\}\z/sx, 'with a hash of the recipe source' );
     ok( $finished, 'marked finished' );
-    like( $log, qr/Loaded milter modules: Language/, 'with what the milter printed' );
+    like( $log, qr/Loaded\ milter\ modules:\ Language/sx, 'with what the milter printed' );
 
     my ($de) = Milter::Corpus::Replay->new( corpus => $corpus, script => $yamilter, config => write_file( "$tmp/de.cfg", "[Language]\nlangs=de\naction=defer\n" ) )->run( folder => '.', timeout => 5 );
     ( undef, $rows ) = $corpus->query( 'SELECT COUNT(*) FROM results WHERE run_id = ?', $de );
     is( $rows->[0][0], 2, 'folder filter limits the replay' );
 
     my $broken = Milter::Corpus::Replay->new( corpus => $corpus, script => $yamilter, config => write_file( "$tmp/broken.cfg", "[Bogus]\naction=reject\n" ) );
-    like( dies { $broken->run() }, qr/Milter exited before it was ready/, 'a milter which will not start dies' );
+    like( dies { $broken->run() }, qr/Milter\ exited\ before\ it\ was\ ready/sx, 'a milter which will not start dies' );
     ( undef, $rows ) = $corpus->query('SELECT COUNT(*) FROM runs WHERE finished IS NULL');
     is( $rows->[0][0], 0, '... and leaves no unfinished run behind' );
 
-    like( dies { Milter::Corpus::Replay->new( corpus => $corpus, script => $yamilter, config => write_file( "$tmp/empty.cfg", "[Language]\n" ) )->run() }, qr/No recipes configured/, 'a recipe section with no keys is not a recipe' );
+    like( dies { Milter::Corpus::Replay->new( corpus => $corpus, script => $yamilter, config => write_file( "$tmp/empty.cfg", "[Language]\n" ) )->run() }, qr/No\ recipes\ configured/sx, 'a recipe section with no keys is not a recipe' );
 };
 
 subtest 'each' => sub {
@@ -65,9 +65,8 @@ subtest 'each' => sub {
     # A copy of Language under another name, so there are two recipes to run without depending on other recipes working
     my $lib = "$tmp/lib/Milter/Recipe";
     make_path($lib);
-    open( my $in, '<', "$fx->{run_dir}/lib/Milter/Recipe/Language.pm" ) or die $!;
-    my $code = do { local $/; <$in> };
-    $code =~ s/Milter::Recipe::Language/Milter::Recipe::Langtoo/g;
+    my $code = read_file("$fx->{run_dir}/lib/Milter/Recipe/Language.pm");
+    $code =~ s/Milter::Recipe::Language/Milter::Recipe::Langtoo/gsx;
     write_file( "$lib/Langtoo.pm", $code );
     local @INC = ( "$tmp/lib", @INC );
 
@@ -81,7 +80,7 @@ subtest 'each' => sub {
     ( undef, $rows ) = $corpus->query( 'SELECT label, config FROM runs WHERE id IN (?, ?) ORDER BY id', @runs );
     is( $rows, [ [ 'each Langtoo', "[Langtoo]\naction=reject\nlangs=de\n" ], [ 'each Language', "[Language]\naction=defer\nlangs=en\n" ] ], 'labelled by recipe, each with only its own section' );
 
-    my ( $cols, $summary ) = $corpus->report('summary');
+    my ( undef, $summary ) = $corpus->report('summary');
     my ($blocked) = grep { $_->[0] eq 'batch' && $_->[2] eq 'blocked' } @$summary;
     is( $blocked->[4], 2, 'the batch blocks what either recipe blocked' );
 };
@@ -92,7 +91,7 @@ subtest 'service.order' => sub {
     my $lib = "$tmp/order/Milter/Recipe";
     make_path($lib);
     write_file( "$lib/Rejects.pm",  "package Milter::Recipe::Rejects;\nuse parent qw{Milter::Recipe};\nour %cb = ( eoh => sub { __PACKAGE__->config_reply( \$_[0], 'no' ) } );\n1;\n" );
-    write_file( "$lib/Zaccepts.pm", "package Milter::Recipe::Zaccepts;\nuse parent qw{Milter::Recipe};\nour %cb = ( eoh => sub { __PACKAGE__->accept() } );\n1;\n" );
+    write_file( "$lib/Zaccepts.pm", "package Milter::Recipe::Zaccepts;\nuse parent qw{Milter::Recipe};\nour %cb = ( eoh => sub { __PACKAGE__->accept_mail() } );\n1;\n" );
     local @INC = ( "$tmp/order", @INC );
 
     my $cfg = write_file( "$tmp/order.cfg", "[service]\norder=Zaccepts\n[Rejects]\naction=reject\n[Zaccepts]\naction=reject\n" );
@@ -102,6 +101,8 @@ subtest 'service.order' => sub {
 };
 
 done_testing();
+
+1;
 
 __END__
 

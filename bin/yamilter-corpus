@@ -1,4 +1,4 @@
-#!/usr/bin/env perl
+#!perl
 
 package YAMilter::Corpus;
 
@@ -17,6 +17,9 @@ use File::Path qw{make_path};
 
 use Milter::Corpus;
 use Milter::Corpus::Replay;
+
+# Progress goes to the terminal, apart from the report on stdout
+my $progress = \*STDERR;
 
 =head1 USAGE
 
@@ -152,10 +155,10 @@ sub cmd_index {
             $source,
             sub {
                 my $s = shift;
-                printf STDERR "\r%d files, %d read, %d new, %d duplicates, %d unchanged", @$s{qw{files read new duplicates skipped}};
+                printf {$progress} "\r%d files, %d read, %d new, %d duplicates, %d unchanged", @$s{qw{files read new duplicates skipped}};
             }
         );
-        printf STDERR "\r%s: %d files, %d read, %d new messages, %d duplicates, %d unchanged, %d gone, in %ds\n", $source, @$stats{qw{files read new duplicates skipped gone}}, time - $start;
+        printf {$progress} "\r%s: %d files, %d read, %d new messages, %d duplicates, %d unchanged, %d gone, in %ds\n", $source, @$stats{qw{files read new duplicates skipped gone}}, time - $start;
     }
     my ($total) = $corpus->dbh->selectrow_array('SELECT COUNT(*) FROM messages');
     print "$total messages indexed.\n";
@@ -177,10 +180,10 @@ sub cmd_run {
         progress => sub {
             my ( $run, $done, $total ) = @_;
             my $rate = $done / ( ( time - $start ) || 1 );
-            printf STDERR "\rrun %d: %d/%d messages (%.0f/s)", $run, $done, $total, $rate;
+            printf {$progress} "\rrun %d: %d/%d messages (%.0f/s)", $run, $done, $total, $rate;
         },
     );
-    print STDERR "\n";
+    print {$progress} "\n";
     print "Recorded run(s): @runs\n";
 
     print_caption( $opts->{tsv}, $corpus->describe( 'summary', batch => $runs[0] ) );
@@ -215,8 +218,7 @@ sub cmd_ignore {
 sub print_caption {
     my ( $tsv, @lines ) = @_;
     return if $tsv;
-    print "$_\n" for @lines;
-    print "\n";
+    print map { "$_\n" } @lines, q{};
     return;
 }
 
@@ -224,8 +226,7 @@ sub cmd_show {
     my ( $corpus, $opts, $id ) = @_;
     die "show needs a message id\n" unless $id;
     my $raw = $corpus->raw($id) // die "No message $id, or it cannot be read.\n";
-    print $raw;
-    print "\n", '-' x 72, "\n";
+    print $raw, "\n", '-' x 72, "\n";
 
     print_table( $corpus->query( 'SELECT folder, path, flags FROM locations WHERE message_id = ?',                                                                                             $id ) );
     print_table( $corpus->query( 'SELECT mail_from, rcpt_to, helo, client_ip, client_host, derived FROM envelope WHERE message_id = ?',                                                        $id ) );
@@ -246,8 +247,8 @@ sub cmd_export {
         my $raw = $corpus->raw($id) // next;
         my ($sha) = $corpus->dbh->selectrow_array( 'SELECT sha256 FROM messages WHERE id = ?', undef, $id );
         open( my $fh, '>:raw', "$to/cur/$id.$sha:2," ) or die "Could not write to $to/cur: $!";
-        print $fh $raw;
-        close $fh;
+        print {$fh} $raw;
+        close $fh or die "Could not finish writing $to/cur/$id.$sha:2,: $!";
         $n++;
     }
     print "Exported $n messages to $to\n";
@@ -258,12 +259,11 @@ sub print_table {
     my ( $cols, $rows, $tsv ) = @_;
     return unless $cols;
     my @rows = map {
-        [ map { my $v = $_ // ''; $v =~ s/[\r\n\t]+/ /g; $v } @$_ ]
+        [ map { my $v = $_ // ''; $v =~ s/[\r\n\t]+/ /gsx; $v } @$_ ]
     } @$rows;
 
     if ($tsv) {
-        print join( "\t", @$cols ), "\n";
-        print join( "\t", @$_ ),    "\n" for @rows;
+        print join( "\t", @$cols ), "\n", map { join( "\t", @$_ ) . "\n" } @rows;
         return;
     }
 
@@ -278,10 +278,7 @@ sub print_table {
         }
     }
     my $fmt = join( '  ', map { "%-${_}s" } @width ) . "\n";
-    printf $fmt, @$cols;
-    printf $fmt, map { '-' x $_ } @width;
-    printf $fmt, @$_ for @rows;
-    print "\n";
+    print sprintf( $fmt, @$cols ), sprintf( $fmt, map { '-' x $_ } @width ), ( map { sprintf( $fmt, @$_ ) } @rows ), "\n";
     return;
 }
 

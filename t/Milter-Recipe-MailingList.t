@@ -2,6 +2,7 @@ use 5.014;
 use strict;
 use warnings FATAL => 'all';
 use re '/aa';
+no autovivification;
 
 use FindBin::libs;
 use Cwd;
@@ -81,7 +82,7 @@ subtest 'body_has_unsubscribe_link' => sub {
     ok( Milter::Recipe::MailingList::body_has_unsubscribe_link( $header, $body ), 'found in a base64 encoded HTML part' );
 
     my $none = encode_base64('<p>nothing to see</p>');
-    ( my $plain = $body ) =~ s{\Q$html\E}{$none};
+    ( my $plain = $body ) =~ s{\Q$html\E}{$none}sx;
     ok( !Milter::Recipe::MailingList::body_has_unsubscribe_link( $header, $plain ), 'not found when no part has one' );
 
     ok( Milter::Recipe::MailingList::body_has_unsubscribe_link( "Subject: s\nContent-Type: multipart/mixed\n", "no boundary, but https://test.test/unsubscribe\r\n" ), 'mail too broken to take apart is read as it came' );
@@ -109,7 +110,9 @@ sub transaction {
     my %cb  = Milter::Recipe->cb();
     $cb{connect}->($ctx);
     $cb{envfrom}->( $ctx, $sender );
-    $cb{header}->( $ctx, @$_ ) for @$headers;
+    foreach my $header (@$headers) {
+        $cb{header}->( $ctx, @$header );
+    }
     my $res = $cb{eoh}->($ctx);
 
     if ( $res eq SMFIS_CONTINUE && defined $body ) {
@@ -131,11 +134,14 @@ subtest 'trusted lists' => sub {
 
     my @spf = ( @list, [ 'Received-SPF', 'Pass (mailfrom) identity=mailfrom; client-ip=192.0.2.1' ] );
     is( [ transaction( '<bounce@lists.test.test>', \@spf ) ], [ SMFIS_CONTINUE, undef ], 'SPF is not proof unless allow_spf' );
-    local $conf->{allow_spf} = 1;
+    $conf->{allow_spf} = 1;
     is( [ transaction( '<bounce@lists.test.test>', \@spf ) ],                                                                                          [ SMFIS_ACCEPT,   undef ], 'with allow_spf, a Received-SPF pass for an envelope sender in the list domain' );
     is( [ transaction( '<bounce@elsewhere.test>', \@spf ) ],                                                                                           [ SMFIS_CONTINUE, undef ], '... but not for one elsewhere' );
     is( [ transaction( '<bounce@lists.test.test>', [ @list, [ 'Received-SPF', 'Softfail' ], [ 'Received-SPF', 'Pass (forged)' ] ] ) ],                 [ SMFIS_CONTINUE, undef ], '... and only the first Received-SPF counts' );
     is( [ transaction( '<bounce@lists.test.test>', [ @list, [ 'Authentication-Results', "$mx; spf=pass smtp.mailfrom=bounce\@lists.test.test" ] ] ) ], [ SMFIS_ACCEPT,   undef ], '... or our Authentication-Results spf=pass' );
+
+    # The configuration is shared with the tests after this one
+    delete $conf->{allow_spf};
 };
 
 subtest 'malformed and missing headers' => sub {
@@ -144,10 +150,12 @@ subtest 'malformed and missing headers' => sub {
     is( [ transaction( '<a@test.test>', [ [ 'List-Unsubscribe-Post', 'List-Unsubscribe=One-Click' ], [ 'List-Unsubscribe', '<mailto:x@test.test>' ] ] ) ],  [ SMFIS_REJECT,   '550 5.7.1 List-Unsubscribe-Post without an https List-Unsubscribe (RFC 8058)' ], 'one-click without https' );
     is( [ transaction( '<a@test.test>', [ [ 'List-Unsubscribe-Post', 'List-Unsubscribe=One-Click' ], [ 'List-Unsubscribe', '<https://test.test/u>' ] ] ) ], [ SMFIS_CONTINUE, undef ],                                                                          'one-click with https' );
 
-    local $conf->{require} = [qw{List-Id List-Unsubscribe}];
+    $conf->{require} = [qw{List-Id List-Unsubscribe}];
     is( [ transaction( '<a@test.test>', [ [ 'List-Unsubscribe', '<https://test.test/u>' ] ] ) ], [ SMFIS_REJECT,   '550 5.7.1 Mailing list mail without a List-Id header' ], 'required header missing from list mail' );
     is( [ transaction( '<a@test.test>', [ [ 'Subject',          'hello' ] ] ) ],                 [ SMFIS_CONTINUE, undef ],                                                  'mail without list headers is not list mail' );
     is( [ transaction( '<a@test.test>', \@list ) ], [ SMFIS_CONTINUE, undef ], 'all there' );
+
+    delete $conf->{require};
 };
 
 subtest 'unsubscribe links in the body' => sub {
@@ -160,8 +168,9 @@ subtest 'unsubscribe links in the body' => sub {
 
     # config() copies no_accum from the service settings on every call
     my $service = Milter::Recipe->new();
-    local $service->{no_accum} = 1;
+    $service->{no_accum} = 1;
     is( [ transaction( '<a@test.test>', [ [ 'Subject', 'deals' ] ], $body ) ], [ SMFIS_ACCEPT, undef ], 'skipped with no_accum' );
+    delete $service->{no_accum};
 };
 
 subtest 'with EnvelopeMatch, in yamilter' => sub {
@@ -172,15 +181,19 @@ subtest 'with EnvelopeMatch, in yamilter' => sub {
             config => config("order=MailingList, EnvelopeMatch\n[MailingList]\naction=reject\nallow=lists.test.test\nauthserv_id=$mx\n[EnvelopeMatch]\naction=reject\n")
         );
         $milter->start();
+        my @header_cmds;
+        foreach my $header (@$headers) {
+            push @header_cmds, [ SMFIC_HEADER, @$header ];
+        }
         my ( $code, $reply ) = Milter::Client::sendmail(
-            $milter->connect(),
+            $milter->connection(),
             { timeout => 5 },
             [ SMFIC_OPTNEG, 6, 0x1FF, 0x1FFFFF ],
             [ SMFIC_HELO,   'client.test.test' ],
             [ SMFIC_MAIL,   '<bounce@lists.test.test>' ],
             [ SMFIC_RCPT,   '<me@test.test>' ],
             [SMFIC_DATA],
-            ( map { [ SMFIC_HEADER, @$_ ] } @$headers ),
+            @header_cmds,
             [SMFIC_EOH],
             [ SMFIC_BODY, $body ],
             [SMFIC_BODYEOB],
@@ -203,6 +216,8 @@ subtest 'with EnvelopeMatch, in yamilter' => sub {
 };
 
 done_testing();
+
+1;
 
 __END__
 

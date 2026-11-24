@@ -6,6 +6,7 @@ use 5.014;
 use strict;
 use warnings FATAL => 'all';
 use re '/aa';
+no autovivification;
 
 use Config::Simple;
 use File::Temp;
@@ -21,7 +22,7 @@ use Milter::Client;
         config => '/path/to/yamilter.cfg',
     );
     $milter->start();
-    my $sock = $milter->connect();
+    my $sock = $milter->connection();
     # Talk to it with Milter::Client::sendmail($sock, @commands)
     my $output = $milter->stop();
 
@@ -78,8 +79,15 @@ The process id of the running milter, or undef when it is not running.
 
 =cut
 
-sub sock { $_[0]->{sock} }
-sub pid  { $_[0]->{pid} }
+sub sock {
+    my ($self) = @_;
+    return $self->{sock};
+}
+
+sub pid {
+    my ($self) = @_;
+    return $self->{pid};
+}
 
 =head1 METHODS
 
@@ -113,7 +121,7 @@ sub start {
     $self->{owner} = $$;
 
     my $tries = $self->{wait} * 20;
-    foreach ( 1 .. $tries ) {
+    while ( $tries-- > 0 ) {
         return 1 if -S $self->sock();
         if ( waitpid( $pid, WNOHANG ) == $pid ) {
             delete $self->{pid};
@@ -125,13 +133,13 @@ sub start {
     die "Milter did not create " . $self->sock() . " within $self->{wait} seconds:\n$out";
 }
 
-=head2 connect
+=head2 connection
 
 Returns a new connection to the milter's socket, and dies when it cannot connect.
 
 =cut
 
-sub connect {
+sub connection {
     my $self = shift;
     return Milter::Client::milter_socket( $self->sock() );
 }
@@ -158,9 +166,17 @@ Returns everything the child printed so far.
 sub output {
     my $self = shift;
     return '' unless $self->{log};
-    open( my $fh, '<', $self->{log}->filename ) or return '';
-    local $/;
-    return <$fh> // '';
+    return _slurp( $self->{log}->filename ) // '';
+}
+
+# The whole of a file, or undef when it cannot be read
+sub _slurp {
+    my ($file) = @_;
+    open( my $fh, '<', $file ) or return;
+    local $/ = undef;
+    my $text = <$fh>;
+    close $fh or return;
+    return $text;
 }
 
 =head2 stop
@@ -177,7 +193,8 @@ sub stop {
     return $self->output() unless $pid;
 
     kill( 'TERM', $pid );
-    foreach ( 1 .. 100 ) {
+    my $tries = 100;
+    while ( $tries-- > 0 ) {
         return $self->output() if waitpid( $pid, WNOHANG ) != 0;
         usleep 100_000;
     }
@@ -191,6 +208,7 @@ sub DESTROY {
     my $self = shift;
     local ( $?, $@ );
     $self->stop() if $self->{pid} && $self->{owner} == $$;
+    return;
 }
 
 1;

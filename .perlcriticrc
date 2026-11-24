@@ -153,6 +153,10 @@ exclude_functions = print
 # share one parse.  A library whose subclasses live in other distributions
 # names in allow_subs each hook that only one of its own subclasses uses.
 [ProhibitMisplacedMethods]
+# envfrom, header and eoh are milter callbacks, not methods: each recipe names its
+# own in %cb, and Milter::Recipe::cb collects them as code references.  The base
+# class never calls them by name, so there is nothing for it to default.
+allow_subs = envfrom header eoh
 [ProhibitPrintSTDERR]
 [InputOutput::ProhibitRepeatedPrints]
 # Perl::Critic's own policies.  only = 1 loads nothing that is not named, so
