@@ -14,8 +14,11 @@ my $fx     = fixture_corpus();
 my $corpus = $fx->{corpus};
 my $source = $fx->{source};
 
+# The subject of the mail whose encoded words decode to a check mark, as the UTF-8 bytes that the corpus stores
+my $deals = 'Best deals ' . join q{}, map { chr } 0xe2, 0x9c, 0x85;
+
 subtest 'index_source' => sub {
-    like( dies { $corpus->index_source("$source/bogus") }, qr/No such directory/, 'a missing source dies' );
+    like( dies { $corpus->index_source("$source/bogus") }, qr/No\ such\ directory/sx, 'a missing source dies' );
 
     my $stats = $corpus->index_source($source);
     is( $stats->{files},      6, 'every message file and mbox message counted, placeholder skipped' );
@@ -45,17 +48,17 @@ subtest 'index_source' => sub {
 subtest 'raw' => sub {
     my ($id) = $corpus->dbh->selectrow_array(q{SELECT message_id FROM headers WHERE name = 'subject' AND value = 'Trash one'});
     my $raw = $corpus->raw($id);
-    like( $raw, qr/\AReturn-Path: <sender\@test.test>\n/, 'mbox message starts after the From_ line' );
-    like( $raw, qr/^>From the start/m,                    'quoted From lines are kept as they are' );
-    like( $raw, qr/as mbox requires\.\n\z/,               'the separating blank line is not part of the message' );
-    unlike( $raw, qr/Trash two/, 'nor is the next message' );
+    like( $raw, qr/\AReturn-Path:\ <sender\@test.test>\n/sx, 'mbox message starts after the From_ line' );
+    like( $raw, qr/^>From\ the\ start/msx,                   'quoted From lines are kept as they are' );
+    like( $raw, qr/as\ mbox\ requires\.\n\z/sx,              'the separating blank line is not part of the message' );
+    unlike( $raw, qr/Trash\ two/sx, 'nor is the next message' );
 
     is( $corpus->raw(99999), undef, 'no such message' );
 };
 
 subtest 'headers & envelope' => sub {
     my ( undef, $rows ) = $corpus->query(q{SELECT decoded FROM headers WHERE name = 'subject' AND decoded IS NOT NULL});
-    is( $rows, [ ["Best deals \x{e2}\x{9c}\x{85}"] ], 'encoded words decoded, as UTF-8' );
+    is( $rows, [ [$deals] ], 'encoded words decoded, as UTF-8' );
 
     ( undef, $rows ) = $corpus->query(
         q{SELECT e.mail_from, e.rcpt_to, e.helo, e.client_ip, e.client_host, e.derived
@@ -91,10 +94,9 @@ subtest 'messages' => sub {
 };
 
 subtest 'reports' => sub {
-    like( dies { $corpus->report('summary') }, qr/No runs to report on/, 'nothing to report before any run' );
+    like( dies { $corpus->report('summary') }, qr/No\ runs\ to\ report\ on/sx, 'nothing to report before any run' );
 
     my %id     = map { $_->[1] => $_->[0] } @{ $corpus->dbh->selectall_arrayref(q{SELECT message_id, COALESCE(decoded, value) FROM headers WHERE name = 'subject'}) };
-    my $deals  = "Best deals \x{e2}\x{9c}\x{85}";
     my $record = sub {
         my ( $run, %action ) = @_;
         $corpus->record_results( $run, map { { message_id => $id{$_}, code => 'x', action => $action{$_} // 'accept', reply => ( $action{$_} ? "no $_" : undef ) } } keys(%id) );
@@ -112,7 +114,7 @@ subtest 'reports' => sub {
 
     ( undef, $rows ) = $corpus->query( q{SELECT verdict, messages FROM verdict_counts WHERE scope = 'batch' AND scope_id = ? ORDER BY verdict}, $first );
     is( $rows, [ [ 'accept', 2 ], [ 'blocked', 2 ], [ 'error', 1 ] ], 'the views can be queried directly' );
-    like( dies { $corpus->report( 'summary', verdict => 'bogus' ) }, qr/No such verdict 'bogus'/, 'unknown verdict dies' );
+    like( dies { $corpus->report( 'summary', verdict => 'bogus' ) }, qr/No\ such\ verdict\ 'bogus'/sx, 'unknown verdict dies' );
 
     ( $cols, $rows ) = $corpus->report( 'summary', run => $first );
     %batch = map { $_->[2] => $_->[4] } grep { $_->[0] eq 'batch' } @$rows;
@@ -126,7 +128,7 @@ subtest 'reports' => sub {
 
     ( $cols, $rows ) = $corpus->report( 'values', header => 'Subject', verdict => 'blocked' );
     is( [ sort map { $_->[0] } @$rows ], [ $deals, 'Ihre Bestellung' ], 'values of a header for a verdict, decoded' );
-    like( dies { $corpus->report('values') }, qr/needs a header/, 'values without a header dies' );
+    like( dies { $corpus->report('values') }, qr/needs\ a\ header/sx, 'values without a header dies' );
 
     ( $cols, $rows ) = $corpus->report('folders');
     my ($trash) = grep { $_->[0] eq 'Trash' } @$rows;
@@ -153,13 +155,13 @@ subtest 'reports' => sub {
     is( $cols,          [qw{id folder from subject}], 'list columns' );
     is( scalar(@$rows), 2,                            'list of accepted mail' );
 
-    like( dies { $corpus->report('bogus') }, qr/No such report 'bogus'/, 'unknown report dies' );
+    like( dies { $corpus->report('bogus') }, qr/No\ such\ report\ 'bogus'/sx, 'unknown report dies' );
 
     my $third = $corpus->start_run( label => 'three', config => '', recipes => '{}' );
     $record->( $third, 'Quarterly report' => 'reject' );
     ( $cols, $rows ) = $corpus->report( 'diff', runs => [ $first, $third ] );
     is( [ sort { $a->[0] cmp $b->[0] } map { [ @$_[ 2, 3, 4 ] ] } @$rows ], [ [ 'Ihre Bestellung', 'tempfail', 'accept' ], [ 'Quarterly report', 'accept', 'reject' ] ], 'diff lists changed actions' );
-    like( dies { $corpus->report( 'diff', runs => [$first] ) }, qr/two run ids/, 'diff needs two runs' );
+    like( dies { $corpus->report( 'diff', runs => [$first] ) }, qr/two\ run\ ids/sx, 'diff needs two runs' );
 
     ( $cols, $rows ) = $corpus->report('summary');
     is( scalar( grep { $_->[0] eq $third } @$rows ), 2, 'the latest batch is reported by default' );
@@ -167,11 +169,11 @@ subtest 'reports' => sub {
     is( [ $corpus->verdict_messages( run => $third ) ], [ grep { $_ != $id{'Quarterly report'} } sort { $a <=> $b } values(%id) ], 'verdict_messages gives ids of the accepted mail' );
 
     subtest 'ignore rules' => sub {
-        like( dies { $corpus->add_ignore( folder => 'x', header => 'y' ) }, qr/a folder or a header, not both/, 'one kind of rule at a time' );
-        like( dies { $corpus->add_ignore( folder => 'x', value  => 'y' ) }, qr/only goes with a header/,        'a value needs a header' );
+        like( dies { $corpus->add_ignore( folder => 'x', header => 'y' ) }, qr/a\ folder\ or\ a\ header,\ not\ both/sx, 'one kind of rule at a time' );
+        like( dies { $corpus->add_ignore( folder => 'x', value  => 'y' ) }, qr/only\ goes\ with\ a\ header/sx,          'a value needs a header' );
 
-        my $trash = $corpus->add_ignore( folder => 'Tra*' );
-        my ( undef, $rows ) = $corpus->report( 'summary', run => $third );
+        my $trash_rule = $corpus->add_ignore( folder => 'Tra*' );
+        ( undef, $rows ) = $corpus->report( 'summary', run => $third );
         is( { map { $_->[2] => $_->[4] } grep { $_->[0] eq 'batch' } @$rows }, { accept => 2, blocked => 1 }, 'a folder rule leaves its mail out of the reports' );
 
         my $german = $corpus->add_ignore( header => 'Subject', value => '*BESTELLUNG*' );
@@ -179,17 +181,22 @@ subtest 'reports' => sub {
         is( { map { $_->[2] => $_->[4] } grep { $_->[0] eq 'batch' } @$rows }, { accept => 2 }, 'a header rule too, matching its value without regard to case' );
 
         ( undef, $rows ) = $corpus->ignores();
-        is( $rows, [ [ $trash, 'Tra*', undef, undef, 2 ], [ $german, undef, 'subject', '*BESTELLUNG*', 1 ] ], 'ignores lists the rules, and what each leaves out' );
-        like( ( $corpus->describe( 'summary', run => $first ) )[1], qr/^3 messages left out by 2 ignore rules; of the 2 others/, 'describe says how much is left out' );
+        is( $rows, [ [ $trash_rule, 'Tra*', undef, undef, 2 ], [ $german, undef, 'subject', '*BESTELLUNG*', 1 ] ], 'ignores lists the rules, and what each leaves out' );
+        my $described = ( $corpus->describe( 'summary', run => $first ) )[1];
+        is( index( $described, '3 messages left out by 2 ignore rules; of the 2 others' ), 0, 'describe says how much is left out' );
 
-        ok( $corpus->remove_ignore($_), "remove rule $_" ) for $trash, $german;
-        ok( !$corpus->remove_ignore($trash), 'removing it again says there was no such rule' );
+        foreach my $rule ( $trash_rule, $german ) {
+            ok( $corpus->remove_ignore($rule), "remove rule $rule" );
+        }
+        ok( !$corpus->remove_ignore($trash_rule), 'removing it again says there was no such rule' );
         ( undef, $rows ) = $corpus->report( 'summary', run => $third );
         is( { map { $_->[2] => $_->[4] } grep { $_->[0] eq 'batch' } @$rows }, { accept => 4, blocked => 1 }, 'and the reports see everything again' );
     };
 };
 
 done_testing();
+
+1;
 
 __END__
 

@@ -6,8 +6,10 @@ use 5.014;
 use strict;
 use warnings FATAL => 'all';
 use re '/aa';
+no autovivification;
 
 use Config::Simple;
+use Module::Runtime   qw{require_module};
 use Sendmail::PMilter qw{:all};
 
 =head1 SYNOPSIS
@@ -207,9 +209,7 @@ sub new {
 
     foreach my $recipe (@blocks) {
         next if $recipe eq 'service';
-        require "Milter/Recipe/$recipe.pm" or do {
-            die "Could not find milter recipe $recipe!";
-        };
+        eval { require_module("Milter::Recipe::$recipe"); 1 } or die "Could not find milter recipe $recipe! $@";
         $obj{$recipe} = $config->get_block($recipe);
     }
 
@@ -232,11 +232,30 @@ The C<service> settings from the configuration (with their defaults), and the co
 
 =cut
 
-sub pidfile { $_[0]->{pidfile} }
-sub sock    { $_[0]->{sock} }
-sub workers { $_[0]->{workers} }
-sub cfile   { $_[0]->{cfile} }
-sub debug   { $_[0]->{debug} }
+sub pidfile {
+    my ($self) = @_;
+    return $self->{pidfile};
+}
+
+sub sock {
+    my ($self) = @_;
+    return $self->{sock};
+}
+
+sub workers {
+    my ($self) = @_;
+    return $self->{workers};
+}
+
+sub cfile {
+    my ($self) = @_;
+    return $self->{cfile};
+}
+
+sub debug {
+    my ($self) = @_;
+    return $self->{debug};
+}
 
 =head1 STATIC METHODS
 
@@ -252,7 +271,7 @@ It is a lookup on the singleton, so calling it from every callback costs nothing
 sub config {
     my $class = shift;
 
-    my ($recipe) = $class =~ m/::(\w+)$/;
+    my ($recipe) = $class =~ m/::(\w+)$/sx;
     my $self     = $class->new();
     my $section  = $self->{$recipe} //= {};
     $section->{debug}    = $self->debug();
@@ -328,7 +347,9 @@ Values are trimmed, and empty ones dropped.  An undefined value is an empty list
 sub config_list {
     my ( $class, $value ) = @_;
     return () unless defined $value;
-    return grep { length } map { s/\A\s+|\s+\z//gr } ( ref $value ? @$value : split( qr/,/, $value ) );
+    my @items   = ref $value ? @$value : split( qr/,/sx, $value );
+    my @trimmed = map { my $item = $_; $item =~ s/\A\s+|\s+\z//gsx; $item } @items;
+    return grep { $_ ne q{} } @trimmed;
 }
 
 =head2 $state = $class->stash($ctx, [\%fresh])
@@ -408,20 +429,18 @@ sub run {
 
     # Under systemd or Milter::Harness this goes to a pipe or file, where block buffering would lose it on TERM
     STDOUT->autoflush(1);
-    print "YAMilter starting up...\n";
-    print "YAMilter using config file " . $self->cfile() . "\n";
+    print "YAMilter starting up...\nYAMilter using config file " . $self->cfile() . "\n";
 
     unlink $self->pidfile() if -e $self->pidfile();
     unlink $self->sock()    if -e $self->sock();
 
-    print {
-        open( my $fh, '>', $self->pidfile() );
-        $fh
-    } $$;
-    print "YAMilter listening on " . $self->sock() . "\n";
+    my $pidfile = $self->pidfile();
+    open( my $fh, '>', $pidfile ) or die "Could not write pidfile $pidfile: $!";
+    print {$fh} $$;
+    close $fh or die "Could not write pidfile $pidfile: $!";
 
-    print "Loaded milter modules: ";
-    print join( ',', ( map { my $subj = $_; $subj =~ s/^Milter::Recipe:://; $subj } loaded_recipes() ) ) . "\n";
+    my @loaded = map { my $subj = $_; $subj =~ s/\AMilter::Recipe:://sx; $subj } loaded_recipes();
+    print "YAMilter listening on " . $self->sock() . "\nLoaded milter modules: " . join( ',', @loaded ) . "\n";
 
     my $listen    = "local:" . $self->sock();
     my %callbacks = $self->cb();
@@ -442,6 +461,7 @@ sub run {
     unlink $self->sock();
 
     print "Shutting down YAMilter.\n";
+    return;
 }
 
 my %cb = (
@@ -478,7 +498,7 @@ my %cb = (
         $ctx->setpriv($p);
         return cont();
     },
-    eom   => \&accept,
+    eom   => \&accept_mail,
     abort => \&cont,
     close => \&cont,
 );
@@ -501,8 +521,7 @@ sub cb {
 
     no strict 'refs';
     foreach my $lm ( $self->loaded_recipes() ) {
-        my $cb  = "$lm\:\:cb";
-        my %mcb = %{ *$cb{HASH} };
+        my %mcb = %{ *{"${lm}::cb"}{HASH} };
         die "Milter recipes must have at least one callback" unless %mcb;
         foreach my $callback ( keys(%mcb) ) {
             push( @{ $intermediate{$callback} }, [ $lm => $mcb{$callback} ] );
@@ -529,16 +548,15 @@ my %mr = (
 
 # Just run everything in order until we short-circuit
 sub _run_callbacks {
-    my $callback = shift;
-    my $args     = shift;
-    foreach my $cbo (@_) {
+    my ( $callback, $args, @callbacks ) = @_;
+    foreach my $cbo (@callbacks) {
         my $module = $cbo->[0];
         my $cb     = $cbo->[1];
         warn "Running $module $callback callback" if $DEBUG;
         my $res = $cb->(@$args);
         warn "Response from callback: " . ( $mr{ $res // '' } // 'UNKNOWN' ) . " (" . ( $res // 'undef' ) . ")" if $DEBUG;
-        next unless defined $res && $res ne SMFIS_CONTINUE;
-        _log_decision( $args->[0], $module, $callback, $res ) if $module ne 'Default';
+        next                                                                                                    if !defined $res || $res eq SMFIS_CONTINUE;
+        _log_decision( $args->[0], $module, $callback, $res )                                                   if $module ne 'Default';
         return $res;
     }
     return SMFIS_CONTINUE;
@@ -549,7 +567,7 @@ sub _log_decision {
     my ( $ctx, $module, $callback, $res ) = @_;
     my $file     = $singleton && $singleton->{decision_log} or return;
     my $queue_id = eval { $ctx->getsymval('i') } // '-';
-    ( my $recipe = $module ) =~ s/\AMilter::Recipe:://;
+    ( my $recipe = $module ) =~ s/\AMilter::Recipe:://sx;
 
     # Each worker appends a whole line at a time, so their lines do not interleave
     open( my $fh, '>>', $file ) or do {
@@ -557,7 +575,7 @@ sub _log_decision {
         return;
     };
     syswrite( $fh, join( "\t", time, $queue_id, $recipe, $callback, $mr{$res} // $res ) . "\n" );
-    close $fh;
+    close $fh or warn "Could not close decision_log $file: $!\n";
     return;
 }
 
@@ -568,27 +586,28 @@ The package names of the recipes loaded from the configuration, in the order the
 =cut
 
 sub loaded_recipes {
-    return map       { "Milter::Recipe::$_" } @{ $singleton->{recipes} } if $singleton;
-    return sort grep { m/^Milter::Recipe::/ } _inc2mod();
+    return map { "Milter::Recipe::$_" } @{ $singleton->{recipes} } if $singleton;
+    my @recipes = sort grep { m/^Milter::Recipe::/sx } _inc2mod();
+    return @recipes;
 }
 
 sub _inc2mod {
     return map {
         my $subj = $_;
-        $subj =~ s|/|::|g;
-        $subj =~ s|\.pm$||;
+        $subj =~ s|/|::|gsx;
+        $subj =~ s|\.pm$||sx;
         $subj
     } keys(%INC);
 }
 
-=head2 accept, cont, reject
+=head2 accept_mail, cont, reject
 
 Return C<SMFIS_ACCEPT>, C<SMFIS_CONTINUE> or C<SMFIS_REJECT>, for recipe callbacks to return.
 Most callbacks want C<< __PACKAGE__->cont() >>, or C<< __PACKAGE__->config_action() >> when they have made up their mind.
 
 =cut
 
-sub accept {
+sub accept_mail {
     return SMFIS_ACCEPT;
 }
 

@@ -15,7 +15,7 @@ use FindBin;
 use Milter::Corpus;
 
 use Exporter 'import';
-our @EXPORT_OK = qw{fixture_corpus write_file};
+our @EXPORT_OK = qw{fixture_corpus read_file write_file};
 
 =head1 FUNCTIONS
 
@@ -54,9 +54,18 @@ sub fixture_corpus {
 sub write_file {
     my ( $file, $text ) = @_;
     open( my $fh, '>', $file ) or die "$file: $!";
-    print $fh $text;
-    close $fh;
+    print {$fh} $text          or die "$file: $!";
+    close $fh                  or die "$file: $!";
     return $file;
+}
+
+sub read_file {
+    my ($file) = @_;
+    open( my $fh, '<', $file ) or die "$file: $!";
+    local $/ = undef;
+    my $text = <$fh>;
+    close $fh or die "$file: $!";
+    return $text;
 }
 
 1;

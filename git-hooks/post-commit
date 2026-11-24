@@ -1,0 +1,16 @@
+#!/bin/sh
+
+# Brings the records of tests-covering up to the commit just made, through
+# refresh-coverage beside this hook, which says why.
+
+# Not while a rebase, or a cherry-pick or revert of several commits, applies
+# them.  git runs this hook for each commit that it applies, and each refresh
+# runs every stale test under Devel::Cover.  post-rewrite refreshes once when a
+# rebase ends, and the next commit after a cherry-pick catches up, because a
+# refresh brings the records up to the working tree, however many commits it
+# missed.
+for state in rebase-merge rebase-apply sequencer; do
+    [ -d "$(git rev-parse --git-path "$state")" ] && exit 0
+done
+
+exec "${0%/*}/refresh-coverage"

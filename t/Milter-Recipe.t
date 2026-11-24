@@ -2,6 +2,7 @@ use 5.014;
 use strict;
 use warnings FATAL => 'all';
 use re '/aa';
+no autovivification;
 
 use FindBin::libs;
 use Test2::V0;
@@ -78,7 +79,7 @@ sub converse {
     my $failed = eval { $milter->start(); 1 } ? undef : $@;
     return ( undef, undef, $failed ) if $failed;
     my ( $code, $reply ) = Milter::Client::sendmail(
-        $milter->connect(),
+        $milter->connection(),
         { timeout => 5 },
         [ SMFIC_OPTNEG, 6, 0x1FF, 0x1FFFFF ],
         [ SMFIC_HELO,   'client.test.test' ],
@@ -95,14 +96,19 @@ sub converse {
     my $out = $milter->stop();
     my @decisions;
     if ( open( my $fh, '<', "$tmp/decisions.log" ) ) {
-        @decisions = map { chomp; [ ( split qr/\t/ )[ 1 .. 4 ] ] } <$fh>;
+        my @lines = <$fh>;
+        close $fh or die "Could not close $tmp/decisions.log: $!";
+        foreach my $line (@lines) {
+            chomp $line;
+            push @decisions, [ ( split qr/\t/sx, $line )[ 1 .. 4 ] ];
+        }
     }
     return ( $code, $reply, $out, \@decisions );
 }
 
 subtest 'order and end of message, in yamilter' => sub {
     my %recipes = (
-        Accepts => 'eoh => sub { __PACKAGE__->accept() }',
+        Accepts => 'eoh => sub { __PACKAGE__->accept_mail() }',
         Rejects => 'eoh => sub { __PACKAGE__->config_reply( $_[0], "no" ) }',
     );
     my ( $code, $reply, $log, $decisions ) = converse( "order=Accepts\n", \%recipes );
@@ -117,7 +123,7 @@ subtest 'order and end of message, in yamilter' => sub {
     is( [ $code, $reply ], [ SMFIR_REPLYCODE, '550 5.7.1 not at the end either' ], 'a recipe\'s end of message callback runs before the default accept' ) or diag($log);
 
     ( $code, $reply, $log ) = converse( "order=Nonesuch\n", \%recipes );
-    like( $log, qr/service\.order names Nonesuch, which has no section of its own/, 'an order naming an unconfigured recipe stops yamilter starting' );
+    like( $log, qr/service\.order\ names\ Nonesuch,\ which\ has\ no\ section/sx, 'an order naming an unconfigured recipe stops yamilter starting' );
 };
 
 # An MTA leaves out each step the milter's answer to OPTNEG declines, so echoing the offer back would leave yamilter only the end of the message
@@ -127,7 +133,7 @@ subtest 'negotiation, in yamilter' => sub {
     my $milter = Milter::Harness->new( script => "$FindBin::Bin/../bin/yamilter", config => $cfg );
     $milter->start();
 
-    my $sock  = $milter->connect();
+    my $sock  = $milter->connection();
     my $offer = SMFIC_OPTNEG . pack( 'N N N', 6, 0x1FF, 0x1FFFFF );
     syswrite( $sock, pack( 'N a*', length($offer), $offer ) );
     sysread( $sock, my $len,   4 );
@@ -151,7 +157,7 @@ subtest 'config, in yamilter' => sub {
     my $milter = Milter::Harness->new( script => "$FindBin::Bin/../bin/yamilter", config => $cfg );
     $milter->start();
     my ( $code, $reply ) = Milter::Client::sendmail(
-        $milter->connect(),
+        $milter->connection(),
         { timeout => 5 },
         [ SMFIC_OPTNEG, 6, 0x1FF, 0x1FFFFF ],
         [ SMFIC_HELO,   'client.test.test' ],
@@ -169,6 +175,8 @@ subtest 'config, in yamilter' => sub {
 };
 
 done_testing();
+
+1;
 
 __END__
 

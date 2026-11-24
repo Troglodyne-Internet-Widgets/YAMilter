@@ -6,11 +6,13 @@ use 5.014;
 use strict;
 use warnings FATAL => 'all';
 use re '/aa';
+no autovivification;
 
 use Config::Simple;
 use Digest::SHA qw{sha256_hex};
 use File::Temp;
 use IO::Select;
+use List::Util qw{any};
 use Cpanel::JSON::XS;
 use POSIX       qw{WNOHANG};
 use Time::HiRes qw{time};
@@ -45,7 +47,7 @@ Only C<order> is kept, less any recipe a run leaves out.
 =cut
 
 # Replayed messages get this and their id as the MTA queue id ({i} macro), so the decision_log can be tied back to them
-my $QUEUE_ID_PREFIX = 'yamilter-corpus-';
+my $QUEUE_ID_RE = qr/\Ayamilter-corpus-(\d+)\z/sx;
 
 my %ACTION = (
     SMFIR_ACCEPT()   => 'accept',
@@ -121,7 +123,8 @@ sub run {
     my @configs = $self->_configs( $opts{each} );
     my ( $batch, @runs );
     foreach my $cfg (@configs) {
-        my $label = join( ' ', grep { defined && length } $opts{label}, ( $opts{each} ? $cfg->{recipes}[0] : () ) );
+        my @words = ( $opts{label}, ( $opts{each} ? $cfg->{recipes}[0] : () ) );
+        my $label = join( ' ', grep { defined && $_ ne q{} } @words );
         my $run   = $corpus->start_run(
             batch   => $batch,
             label   => $label,
@@ -153,17 +156,22 @@ sub _configs {
     my @order = Milter::Recipe->config_list( $cfg->param('service.order') );
 
     my @groups = $each ? ( map { [$_] } @recipes ) : ( \@recipes );
-    return map {
-        my @group = @$_;
-        my %in    = map { $_ => 1 } @group;
-        {
-            recipes => \@group,
-            text    => _ini( map { ( $_ => $cfg->get_block($_) ) } @group ),
+    my @configs;
+    foreach my $group (@groups) {
+        my %in = map { $_ => 1 } @$group;
+        my %blocks;
+        foreach my $recipe (@$group) {
+            $blocks{$recipe} = $cfg->get_block($recipe);
+        }
+        push @configs, {
+            recipes => $group,
+            text    => _ini(%blocks),
 
             # yamilter refuses an order naming a recipe it has no section for, which --each leaves out
             order => join( ', ', grep { $in{$_} } @order ),
-        }
-    } @groups;
+        };
+    }
+    return @configs;
 }
 
 # Config::Simple cannot write a section with no keys, and yamilter cannot see one, so we write these ourselves.
@@ -199,20 +207,20 @@ sub _describe_recipes {
 sub _replay {
     my ( $self, $run, $cfg, $messages, $opts ) = @_;
 
-    my $dir  = File::Temp->newdir();
-    my $file = "$dir/yamilter.cfg";
-    open( my $fh, '>', $file ) or die "Could not write $file: $!";
-    print $fh _ini(
+    my $dir     = File::Temp->newdir();
+    my $file    = "$dir/yamilter.cfg";
+    my $service = _ini(
         service => {
             sock         => "$dir/yamilter.sock",
             pidfile      => "$dir/yamilter.pid",
             workers      => $opts->{jobs},
             decision_log => "$dir/decisions.log",
-            ( length $cfg->{order} ? ( order => $cfg->{order} ) : () ),
+            ( ( $cfg->{order} // '' ) ne '' ? ( order => $cfg->{order} ) : () ),
         },
     );
-    print $fh $cfg->{text};
-    close $fh;
+    open( my $fh, '>', $file )          or die "Could not write $file: $!";
+    print {$fh} $service . $cfg->{text} or die "Could not write $file: $!";
+    close $fh                           or die "Could not write $file: $!";
 
     my $milter = Milter::Harness->new( script => $self->{script}, config => $file );
     $milter->start();
@@ -222,13 +230,13 @@ sub _replay {
         pipe( my $reader, my $writer ) or die "Could not pipe: $!";
         my $pid = fork() // die "Could not fork: $!";
         if ( !$pid ) {
-            close $reader;
+            close $reader or die "Could not close pipe: $!";
             $writer->autoflush(1);
             my @mine = @$messages[ grep { $_ % $opts->{jobs} == $job } 0 .. $#$messages ];
             _worker( $milter, $writer, \@mine, $opts->{timeout} );
             POSIX::_exit(0);
         }
-        close $writer;
+        close $writer or die "Could not close pipe: $!";
         push @readers, [ $reader, $pid ];
     }
 
@@ -240,7 +248,7 @@ sub _replay {
             my $line = readline($reader);
             if ( !defined $line ) {
                 $select->remove($reader);
-                close $reader;
+                close $reader or die "Could not close pipe: $!";
                 next;
             }
             push @pending, $json->decode($line);
@@ -266,11 +274,14 @@ sub _replay {
 sub _decisions {
     my ($file) = @_;
     open( my $fh, '<', $file ) or return {};
+    my @lines = <$fh>;
+    close $fh or die "Could not close $file: $!";
+
     my %recipe;
-    while ( my $line = <$fh> ) {
+    foreach my $line (@lines) {
         chomp $line;
-        my ( undef, $queue_id, $recipe ) = split( qr/\t/, $line );
-        my ($id) = ( $queue_id // '' ) =~ m/\A\Q$QUEUE_ID_PREFIX\E(\d+)\z/ or next;
+        my ( undef, $queue_id, $recipe ) = split( qr/\t/sx, $line );
+        my ($id) = ( $queue_id // '' ) =~ $QUEUE_ID_RE or next;
         $recipe{$id} = $recipe;
     }
     return \%recipe;
@@ -284,7 +295,7 @@ sub _worker {
         my $result = eval { _replay_one( $milter, $msg, $timeout ) } // { code => CLIENT_EOF, action => 'error', reply => "$@" };
         $result->{message_id} = $msg->{id};
         $result->{elapsed_ms} = int( ( time - $start ) * 1000 );
-        print $out $json->encode($result) . "\n";
+        print {$out} $json->encode($result) . "\n" or die "Could not report a result: $!";
     }
     return;
 }
@@ -294,17 +305,18 @@ sub _replay_one {
     my $raw = Milter::Corpus::read_bytes( @$msg{qw{path offset length}} );
     return { code => CLIENT_EOF, action => 'error', reply => "Could not read $msg->{path}" } unless defined $raw;
 
-    my $sock = $milter->connect();
-    my ( $code, $payload, $mods ) = Milter::Client::sendmail( $sock, { timeout => $timeout }, Milter::Client::conversation( $raw, { ( map { $_ => $msg->{$_} } qw{client_ip client_host helo mail_from rcpt_to} ), queue_id => "$QUEUE_ID_PREFIX$msg->{id}" } ) );
-    close $sock;
+    my $sock = $milter->connection();
+    my ( $code, $payload, $mods ) = Milter::Client::sendmail( $sock, { timeout => $timeout }, Milter::Client::conversation( $raw, { ( map { $_ => $msg->{$_} } qw{client_ip client_host helo mail_from rcpt_to} ), queue_id => "yamilter-corpus-$msg->{id}" } ) );
+    close $sock or die "Could not close the milter connection: $!";
 
     my $action = $ACTION{$code};
     if ( $code eq SMFIR_REPLYCODE ) {
-        $action = $payload =~ m/^5/ ? 'reject' : $payload =~ m/^4/ ? 'tempfail' : 'accept';
+        $action = $payload =~ m/\A5/sx ? 'reject' : $payload =~ m/\A4/sx ? 'tempfail' : 'accept';
     }
 
     # A quarantined message is accepted by the MTA, but held rather than delivered
-    $action = 'quarantine' if ( $action // '' ) eq 'accept' && grep { $_->[0] eq SMFIR_QUARANTINE } @$mods;
+    my $quarantine = SMFIR_QUARANTINE;
+    $action = 'quarantine' if ( $action // '' ) eq 'accept' && any { $_->[0] eq $quarantine } @{ $mods // [] };
 
     return {
         code          => $code,

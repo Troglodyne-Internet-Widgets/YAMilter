@@ -259,7 +259,7 @@ Return the hash of callbacks to be run by the milter.
 
 The package names of the recipes loaded from the configuration, in the order they run (see `order` in ["Service configuration"](#service-configuration)).
 
-## accept, cont, reject
+## accept_mail, cont, reject
 
 Return `SMFIS_ACCEPT`, `SMFIS_CONTINUE` or `SMFIS_REJECT`, for recipe callbacks to return.
 Most callbacks want `__PACKAGE__->cont()`, or `__PACKAGE__->config_action()` when they have made up their mind.
