@@ -304,11 +304,13 @@ sub list_id {
     return lc $id;
 }
 
-=head2 ($authserv_id, @results) = authentication_results($value)
+=head2 authentication_results($value)
 
 Parse an RFC 8601 Authentication-Results header value.
 Each result is a hashref of C<method> and C<result> (lowercased), and C<props>, a hashref of C<ptype.property> (lowercased) to value.
 Returns nothing for a header with no authserv-id.
+
+    my ($authserv_id, @results) = authentication_results($value);
 
 =cut
 

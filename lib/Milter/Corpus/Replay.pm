@@ -78,7 +78,7 @@ sub new {
 
 =head1 METHODS
 
-=head2 @run_ids = run(%opts)
+=head2 run(%opts)
 
 =over 4
 
@@ -108,6 +108,8 @@ Seconds to wait for each milter reply before recording a timeout.  Defaults to 1
 Called with C<($run_id, $done, $total)> every so often.
 
 =back
+
+    my @run_ids = run(%opts);
 
 =cut
 
