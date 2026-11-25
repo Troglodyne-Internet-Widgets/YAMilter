@@ -859,7 +859,7 @@ my %VERDICTS = ( accept => 'accepted', blocked => 'blocked', error => 'errors' )
 
 =head1 REPORTS
 
-=head2 ($columns, $rows) = report($name, %opts)
+=head2 report($name, %opts)
 
 Run one of the canned reports.
 
@@ -911,6 +911,8 @@ Messages of the verdict: id, folder, From, Subject.
 Messages whose action differs between two runs (C<runs> option).
 
 =back
+
+    my ($columns, $rows) = report($name, %opts);
 
 =cut
 
@@ -965,10 +967,12 @@ sub report {
     return $self->query( $sql, @bind, $opts{limit} );
 }
 
-=head2 @lines = describe($name, %opts)
+=head2 describe($name, %opts)
 
 What a report with the same options is about, in words: the runs and their recipes, how many messages the ignore rules leave out,
 the verdicts of the rest, and which of them the report shows.
+
+    my @lines = describe($name, %opts);
 
 =cut
 
@@ -1026,9 +1030,11 @@ sub add_ignore {
     return $self->dbh->last_insert_id( '', '', 'ignores', 'id' );
 }
 
-=head2 ($columns, $rows) = ignores()
+=head2 ignores()
 
 The ignore rules, with how many messages each leaves out.
+
+    my ($columns, $rows) = ignores();
 
 =cut
 
@@ -1061,9 +1067,11 @@ sub _scope {
     return ( batch => $opts{batch} // scalar $self->dbh->selectrow_array('SELECT batch FROM runs ORDER BY id DESC LIMIT 1') );
 }
 
-=head2 ($columns, $rows) = query($sql, @bind)
+=head2 query($sql, @bind)
 
 Run any query against the corpus.  A single hashref of bind values binds by name (C<:name>).
+
+    my ($columns, $rows) = query($sql, @bind);
 
 =cut
 

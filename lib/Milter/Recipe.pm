@@ -311,13 +311,15 @@ sub config_action {
     return $action{reject};
 }
 
-=head2 ($smtp_code, $esmtp_code) = $class->config_code()
+=head2 $class->config_code()
 
 Sometimes you will want a callback to do $ctx->setreply() to have a complicated response.
 
 This will map the config action to the appropriate response code to use as the first arg to setreply().
 
 Dies in the event your action has no appropriate code (e.g. discard, loop).
+
+    my ($smtp_code, $esmtp_code) = $class->config_code();
 
 =cut
 
@@ -337,10 +339,12 @@ sub config_code {
     return @$code;
 }
 
-=head2 @values = $class->config_list($value)
+=head2 $class->config_list($value)
 
 A configuration value as a list: L<Config::Simple> hands back a comma separated value as an arrayref, and a single one as a string.
 Values are trimmed, and empty ones dropped.  An undefined value is an empty list.
+
+    my @values = $class->config_list($value);
 
 =cut
 
@@ -352,11 +356,13 @@ sub config_list {
     return grep { $_ ne q{} } @trimmed;
 }
 
-=head2 $state = $class->stash($ctx, [\%fresh])
+=head2 $class->stash($ctx, [\%fresh])
 
 The recipe's own part of the connection's private data, kept under its package name so recipes do not trample each other.
 Given C<\%fresh>, replaces it first, which recipes do at MAIL FROM so nothing carries over from an earlier message on the connection.
 Returns undef if nothing was ever stashed.
+
+    my $state = $class->stash($ctx, \%fresh);
 
 =cut
 
